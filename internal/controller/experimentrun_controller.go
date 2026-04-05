@@ -219,6 +219,15 @@ func (r *ExperimentRunReconciler) handleApproved(
 func (r *ExperimentRunReconciler) executeDeletePod(ctx context.Context, namespace, podName string, dryRun bool) chaosv1alpha1.TargetResult {
 	log := logf.FromContext(ctx)
 
+	// Short-circuit: dry-run skips all real work including existence checks.
+	if dryRun {
+		log.Info("dryRun=true, skipping actual pod deletion", "pod", podName)
+		return chaosv1alpha1.TargetResult{
+			Target: podName,
+			Status: chaosv1alpha1.TargetResultSuccess,
+		}
+	}
+
 	pod := &corev1.Pod{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: podName}, pod); err != nil {
 		if errors.IsNotFound(err) {
@@ -240,14 +249,6 @@ func (r *ExperimentRunReconciler) executeDeletePod(ctx context.Context, namespac
 			Target: podName,
 			Status: chaosv1alpha1.TargetResultFailed,
 			Reason: chaosv1alpha1.ReasonAlreadyTerminated,
-		}
-	}
-
-	if dryRun {
-		log.Info("dryRun=true, skipping actual pod deletion", "pod", podName)
-		return chaosv1alpha1.TargetResult{
-			Target: podName,
-			Status: chaosv1alpha1.TargetResultSuccess,
 		}
 	}
 

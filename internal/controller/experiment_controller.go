@@ -174,24 +174,25 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 	}
 
 	if len(targets) == 0 {
-		run.Status.Phase = chaosv1alpha1.PhaseSkipped
-		run.Status.ScheduledAt = &scheduledAt
 		if err := r.Create(ctx, run); err != nil {
 			return ctrl.Result{}, err
 		}
-		// Still need to patch status so we patch after create via status subresource.
+		// r.Create strips status (status subresource); re-set and update.
+		run.Status.Phase = chaosv1alpha1.PhaseSkipped
+		run.Status.ScheduledAt = &scheduledAt
 		if err := r.Status().Update(ctx, run); err != nil {
 			return ctrl.Result{}, err
 		}
 		r.Recorder.Event(experiment, corev1.EventTypeNormal, "RunSkipped", "No eligible targets found")
 		log.Info("no targets found, run marked as Skipped", "run", runName)
 	} else {
-		run.Status.Phase = chaosv1alpha1.PhasePreviewGenerated
-		run.Status.PreviewTargets = targets
-		run.Status.ScheduledAt = &scheduledAt
 		if err := r.Create(ctx, run); err != nil {
 			return ctrl.Result{}, err
 		}
+		// r.Create strips status (status subresource); re-set and update.
+		run.Status.Phase = chaosv1alpha1.PhasePreviewGenerated
+		run.Status.PreviewTargets = targets
+		run.Status.ScheduledAt = &scheduledAt
 		if err := r.Status().Update(ctx, run); err != nil {
 			return ctrl.Result{}, err
 		}
