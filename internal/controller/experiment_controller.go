@@ -219,7 +219,57 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 		return ctrl.Result{}, err
 	}
 
+	if err := r.pruneHistory(ctx, experiment); err != nil {
+		log.Error(err, "failed to prune run history")
+	}
+
 	return ctrl.Result{}, nil
+}
+
+func (r *ExperimentReconciler) pruneHistory(ctx context.Context, experiment *chaosv1alpha1.Experiment) error {
+	var runList chaosv1alpha1.ExperimentRunList
+	if err := r.List(ctx, &runList, client.InNamespace(experiment.Namespace)); err != nil {
+		return err
+	}
+
+	var successful, failed []chaosv1alpha1.ExperimentRun
+	for _, run := range runList.Items {
+		if run.Spec.ExperimentName != experiment.Name {
+			continue
+		}
+		switch run.Status.Phase {
+		case chaosv1alpha1.PhaseCompleted:
+			successful = append(successful, run)
+		case chaosv1alpha1.PhaseFailed, chaosv1alpha1.PhaseSkipped, chaosv1alpha1.PhaseExpired:
+			failed = append(failed, run)
+		}
+	}
+
+	successLimit := int32(3)
+	if experiment.Spec.SuccessfulHistoryLimit != nil {
+		successLimit = *experiment.Spec.SuccessfulHistoryLimit
+	}
+	failLimit := int32(1)
+	if experiment.Spec.FailedHistoryLimit != nil {
+		failLimit = *experiment.Spec.FailedHistoryLimit
+	}
+
+	deleteOldest := func(runs []chaosv1alpha1.ExperimentRun, keep int32) error {
+		sort.Slice(runs, func(i, j int) bool {
+			return runs[i].CreationTimestamp.After(runs[j].CreationTimestamp.Time)
+		})
+		for i := int(keep); i < len(runs); i++ {
+			if err := r.Delete(ctx, &runs[i]); client.IgnoreNotFound(err) != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if err := deleteOldest(successful, successLimit); err != nil {
+		return err
+	}
+	return deleteOldest(failed, failLimit)
 }
 
 // selectTargets fetches pods matching the selector and applies all safety filters.

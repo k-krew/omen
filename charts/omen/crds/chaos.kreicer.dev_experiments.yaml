@@ -102,6 +102,13 @@ spec:
                   dryRun causes the controller to select targets and record them without
                   performing the actual chaos action.
                 type: boolean
+              failedHistoryLimit:
+                default: 1
+                description: failedHistoryLimit is the number of failed, skipped,
+                  and expired ExperimentRuns to retain.
+                format: int32
+                minimum: 0
+                type: integer
               mode:
                 description: mode defines the target selection strategy.
                 properties:
@@ -180,6 +187,13 @@ spec:
                       namespace.
                     type: string
                 type: object
+              successfulHistoryLimit:
+                default: 3
+                description: successfulHistoryLimit is the number of completed ExperimentRuns
+                  to retain.
+                format: int32
+                minimum: 0
+                type: integer
             required:
             - action
             - mode

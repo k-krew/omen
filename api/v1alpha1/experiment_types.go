@@ -166,6 +166,18 @@ type ExperimentSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	DryRun bool `json:"dryRun,omitempty"`
+
+	// successfulHistoryLimit is the number of completed ExperimentRuns to retain.
+	// +kubebuilder:default=3
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	SuccessfulHistoryLimit *int32 `json:"successfulHistoryLimit,omitempty"`
+
+	// failedHistoryLimit is the number of failed, skipped, and expired ExperimentRuns to retain.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	FailedHistoryLimit *int32 `json:"failedHistoryLimit,omitempty"`
 }
 
 // ExperimentStatus defines the observed state of Experiment.
