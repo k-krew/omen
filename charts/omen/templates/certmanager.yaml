@@ -1,0 +1,27 @@
+{{- if .Values.webhook.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "omen.fullname" . }}-selfsigned-issuer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "omen.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "omen.fullname" . }}-serving-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "omen.labels" . | nindent 4 }}
+spec:
+  dnsNames:
+  - {{ include "omen.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc
+  - {{ include "omen.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: {{ include "omen.fullname" . }}-selfsigned-issuer
+  secretName: {{ include "omen.fullname" . }}-webhook-tls
+{{- end }}

@@ -19,6 +19,10 @@ metadata:
   name: {{ include "omen.fullname" . }}-validating-webhook-configuration
   labels:
     {{- include "omen.labels" . | nindent 4 }}
+  {{- if .Values.webhook.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "omen.fullname" . }}-serving-cert
+  {{- end }}
 webhooks:
   - admissionReviewVersions: [v1]
     clientConfig:

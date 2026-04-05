@@ -57,8 +57,8 @@ affinity: {}
 webhook:
   port: 9443
   certManager:
-    enabled: false
-  tlsCertDir: ""
+    enabled: true
+  tlsCertDir: "/tmp/k8s-webhook-server/serving-certs"
   tlsCertName: tls.crt
   tlsCertKey: tls.key
 
