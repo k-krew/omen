@@ -153,7 +153,7 @@ func (r *ExperimentRunReconciler) handlePendingApproval(
 	// the global default for immediate runs.
 	ttl := defaultApprovalTTL
 	if run.Spec.ExecuteAt != nil {
-		maxTTL := run.Spec.ExecuteAt.Time.Sub(run.CreationTimestamp.Time)
+		maxTTL := run.Spec.ExecuteAt.Sub(run.CreationTimestamp.Time)
 		if maxTTL > 0 {
 			ttl = maxTTL
 		}

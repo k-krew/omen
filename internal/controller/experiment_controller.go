@@ -119,7 +119,7 @@ func (r *ExperimentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Requeue when the tick after nextTick is due, so we pre-create the
 	// following run as soon as the current one finishes.
 	nextAfterNext := schedule.Next(nextTick)
-	return ctrl.Result{RequeueAfter: nextAfterNext.Sub(time.Now())}, nil
+	return ctrl.Result{RequeueAfter: time.Until(nextAfterNext)}, nil
 }
 
 // scheduleRun creates an ExperimentRun for the given executeAt time.
