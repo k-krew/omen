@@ -11,3 +11,5 @@ keywords:
 home: https://github.com/k-krew/omen
 sources:
   - https://github.com/k-krew/omen
+annotations:
+  org.opencontainers.image.source: "https://github.com/k-krew/omen"
