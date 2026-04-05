@@ -39,7 +39,7 @@ jobs:
           cache: true
 
       - name: Install setup-envtest
-        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+        run: go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.23.3
 
       - name: Fetch envtest binaries
         run: |
