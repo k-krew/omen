@@ -28,5 +28,16 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+
+# Build and local development directories
+bin/
+testbin/
+
+# macOS system files
+.DS_Store
+
+# Local Kubernetes configs (just in case)
+*.kubeconfig
+kubeconfig

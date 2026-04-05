@@ -1,0 +1,66 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/k-krew/omen
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Controller manager flags
+manager:
+  logLevel: info
+  leaderElect: true
+  metricsBindAddress: "0"
+  healthProbeBindAddress: ":8081"
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Webhook TLS configuration.
+# When cert-manager is available, set certManager.enabled=true.
+# Otherwise provide your own cert via webhook.tlsCertDir.
+webhook:
+  port: 9443
+  certManager:
+    enabled: false
+  tlsCertDir: ""
+  tlsCertName: tls.crt
+  tlsCertKey: tls.key
+
+# Pod namespace env var injected into the manager so it can exclude itself.
+podNamespace: ""

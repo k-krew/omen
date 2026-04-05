@@ -1,0 +1,26 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: omen-validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: omen-webhook-service
+      namespace: system
+      path: /validate-chaos-kreicer-dev-v1alpha1-experiment
+  failurePolicy: Fail
+  name: vexperiment.kb.io
+  rules:
+  - apiGroups:
+    - chaos.kreicer.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - experiments
+  sideEffects: None

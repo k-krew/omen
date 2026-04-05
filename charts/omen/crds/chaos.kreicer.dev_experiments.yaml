@@ -1,0 +1,223 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: experiments.chaos.kreicer.dev
+spec:
+  group: chaos.kreicer.dev
+  names:
+    kind: Experiment
+    listKind: ExperimentList
+    plural: experiments
+    singular: experiment
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.runPolicy.schedule
+      name: Schedule
+      type: string
+    - jsonPath: .spec.paused
+      name: Paused
+      type: boolean
+    - jsonPath: .status.activeRun
+      name: ActiveRun
+      type: string
+    - jsonPath: .status.lastScheduleTime
+      name: LastSchedule
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Experiment is the Schema for the experiments API
+        properties:
+          apiVersion:
+            description: APIVersion defines the versioned schema of this representation
+              of an object.
+            type: string
+          kind:
+            description: Kind is a string value representing the REST resource this
+              object represents.
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of Experiment
+            properties:
+              action:
+                description: action defines the chaos operation to perform on selected targets.
+                properties:
+                  type:
+                    description: type is the chaos action to execute.
+                    enum:
+                    - delete_pod
+                    type: string
+                required:
+                - type
+                type: object
+              approval:
+                description: approval configures the optional manual approval gate.
+                properties:
+                  required:
+                    default: false
+                    description: required specifies whether manual approval is needed before execution.
+                    type: boolean
+                  ttl:
+                    description: ttl is how long to wait for approval before the run expires.
+                    type: string
+                  webhook:
+                    description: webhook configures the notification sent when approval is required.
+                    properties:
+                      url:
+                        description: url is the HTTP endpoint to notify when approval is required.
+                        type: string
+                    required:
+                    - url
+                    type: object
+                required:
+                - required
+                type: object
+              dryRun:
+                default: false
+                description: dryRun causes the controller to select targets and record them without performing the actual chaos action.
+                type: boolean
+              mode:
+                description: mode defines the target selection strategy.
+                properties:
+                  count:
+                    description: count is the number of targets to select.
+                    minimum: 1
+                    type: integer
+                  type:
+                    default: random
+                    description: type is the selection strategy.
+                    enum:
+                    - random
+                    type: string
+                required:
+                - count
+                - type
+                type: object
+              paused:
+                default: false
+                description: paused stops scheduling of new ExperimentRuns when true.
+                type: boolean
+              runPolicy:
+                description: runPolicy controls scheduling behaviour.
+                properties:
+                  concurrencyPolicy:
+                    default: Forbid
+                    description: concurrencyPolicy defines what happens when a new run is triggered while one is still active.
+                    enum:
+                    - Forbid
+                    type: string
+                  cooldown:
+                    description: cooldown is the minimum duration between consecutive runs.
+                    type: string
+                  schedule:
+                    description: schedule is a cron expression used when type is Repeat.
+                    type: string
+                  type:
+                    default: Once
+                    description: type specifies whether the experiment runs once or on a repeat schedule.
+                    enum:
+                    - Once
+                    - Repeat
+                    type: string
+                required:
+                - type
+                type: object
+              safety:
+                description: safety defines the blast-radius constraints.
+                properties:
+                  denyNamespaces:
+                    description: denyNamespaces lists namespaces that must never be targeted.
+                    items:
+                      type: string
+                    type: array
+                  maxTargets:
+                    description: maxTargets is the hard limit on how many pods can be targeted in a single run.
+                    minimum: 1
+                    type: integer
+                type: object
+              selector:
+                description: selector identifies the pool of pods eligible for targeting.
+                properties:
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: labels is a set of key/value pairs used to filter pods.
+                    type: object
+                  namespace:
+                    description: namespace restricts target selection to the specified namespace.
+                    type: string
+                type: object
+            required:
+            - action
+            - mode
+            - runPolicy
+            - selector
+            type: object
+          status:
+            description: status defines the observed state of Experiment
+            properties:
+              activeRun:
+                description: activeRun holds the name of the currently active ExperimentRun, if any.
+                type: string
+              conditions:
+                description: conditions represent the lifecycle state of the Experiment.
+                items:
+                  description: Condition contains details for one aspect of the current state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastScheduleTime:
+                description: lastScheduleTime records when the most recent ExperimentRun was created.
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

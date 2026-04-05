@@ -1,0 +1,13 @@
+apiVersion: v2
+name: omen
+description: A lightweight Kubernetes chaos engineering operator
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - chaos
+  - kubernetes
+  - operator
+home: https://github.com/k-krew/omen
+sources:
+  - https://github.com/k-krew/omen

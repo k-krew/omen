@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- chaos_v1alpha1_experiment.yaml
+- chaos_v1alpha1_experimentrun.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

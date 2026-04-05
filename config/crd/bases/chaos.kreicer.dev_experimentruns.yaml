@@ -1,0 +1,160 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: experimentruns.chaos.kreicer.dev
+spec:
+  group: chaos.kreicer.dev
+  names:
+    kind: ExperimentRun
+    listKind: ExperimentRunList
+    plural: experimentruns
+    singular: experimentrun
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.experimentName
+      name: Experiment
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.approved
+      name: Approved
+      type: boolean
+    - jsonPath: .status.scheduledAt
+      name: ScheduledAt
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ExperimentRun is the Schema for the experimentruns API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of ExperimentRun
+            properties:
+              approved:
+                default: false
+                description: |-
+                  approved must be patched to true by an external system to unblock execution
+                  when the parent Experiment requires approval.
+                type: boolean
+              experimentName:
+                description: experimentName is the name of the parent Experiment.
+                minLength: 1
+                type: string
+            required:
+            - experimentName
+            type: object
+          status:
+            description: status defines the observed state of ExperimentRun
+            properties:
+              completedAt:
+                description: completedAt records when the run reached a terminal phase.
+                format: date-time
+                type: string
+              phase:
+                description: phase is the current lifecycle stage of this run.
+                enum:
+                - PendingPreview
+                - PreviewGenerated
+                - PendingApproval
+                - Approved
+                - Running
+                - Completed
+                - Failed
+                - Skipped
+                - Expired
+                type: string
+              previewTargets:
+                description: |-
+                  previewTargets is the fixed list of pod names selected at preview time.
+                  These targets are not recalculated during execution.
+                items:
+                  type: string
+                type: array
+              results:
+                description: results holds the per-target outcome after execution.
+                items:
+                  description: TargetResult records the outcome of the chaos action
+                    for one target pod.
+                  properties:
+                    reason:
+                      description: reason is populated when status is Failed.
+                      enum:
+                      - NotFound
+                      - AlreadyTerminated
+                      - PermissionDenied
+                      - Timeout
+                      - Unknown
+                      type: string
+                    status:
+                      description: status is the outcome of the action.
+                      enum:
+                      - Success
+                      - Failed
+                      type: string
+                    target:
+                      description: target is the name of the pod that was acted on.
+                      type: string
+                  required:
+                  - status
+                  - target
+                  type: object
+                type: array
+              scheduledAt:
+                description: scheduledAt records when this run was created by the
+                  scheduler.
+                format: date-time
+                type: string
+              startedAt:
+                description: startedAt records when execution began.
+                format: date-time
+                type: string
+              summary:
+                description: summary aggregates the execution outcomes.
+                properties:
+                  failed:
+                    description: failed is the count of failed actions.
+                    type: integer
+                  success:
+                    description: success is the count of successful actions.
+                    type: integer
+                  total:
+                    description: total is the number of targets that were acted on.
+                    type: integer
+                required:
+                - failed
+                - success
+                - total
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
