@@ -149,9 +149,20 @@ func (r *ExperimentRunReconciler) handlePendingApproval(
 	run *chaosv1alpha1.ExperimentRun,
 	experiment *chaosv1alpha1.Experiment,
 ) (ctrl.Result, error) {
+	// Default TTL: time until the scheduled execution (for pre-created runs) or
+	// the global default for immediate runs.
 	ttl := defaultApprovalTTL
+	if run.Spec.ExecuteAt != nil {
+		maxTTL := run.Spec.ExecuteAt.Time.Sub(run.CreationTimestamp.Time)
+		if maxTTL > 0 {
+			ttl = maxTTL
+		}
+	}
+	// User-specified TTL is honoured only if it is shorter than the max above.
 	if experiment.Spec.Approval != nil && experiment.Spec.Approval.TTL != nil {
-		ttl = experiment.Spec.Approval.TTL.Duration
+		if userTTL := experiment.Spec.Approval.TTL.Duration; userTTL < ttl {
+			ttl = userTTL
+		}
 	}
 
 	var approvalStarted time.Time
@@ -185,6 +196,14 @@ func (r *ExperimentRunReconciler) handleApproved(
 	experiment *chaosv1alpha1.Experiment,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+
+	// For pre-created runs, wait in Approved until the scheduled execution time.
+	if run.Spec.ExecuteAt != nil {
+		if remaining := time.Until(run.Spec.ExecuteAt.Time); remaining > 0 {
+			log.Info("waiting for ExecuteAt", "remainingSeconds", remaining.Seconds())
+			return ctrl.Result{RequeueAfter: remaining}, nil
+		}
+	}
 
 	if _, err := r.transitionPhase(ctx, run, chaosv1alpha1.PhaseRunning); err != nil {
 		return ctrl.Result{}, err

@@ -76,15 +76,16 @@ func (r *ExperimentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	now := time.Now()
 
-	// For Once policy: create exactly one run, then stop.
+	// For Once policy: create exactly one run and execute immediately (no ExecuteAt).
 	if experiment.Spec.RunPolicy.Type == chaosv1alpha1.RunPolicyOnce {
 		if experiment.Status.LastScheduleTime != nil {
 			return ctrl.Result{}, nil
 		}
-		return r.scheduleRun(ctx, experiment, now)
+		return r.scheduleRun(ctx, experiment, now, time.Time{})
 	}
 
-	// Repeat policy: parse cron and check if a new run is due.
+	// Repeat policy: pre-create a run for the next cron tick immediately so
+	// users can preview targets and approve before execution time arrives.
 	if experiment.Spec.RunPolicy.Schedule == "" {
 		log.Info("repeat experiment has no schedule, skipping")
 		return ctrl.Result{}, nil
@@ -104,22 +105,27 @@ func (r *ExperimentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		lastRun = experiment.CreationTimestamp.Time
 	}
 
-	nextRun := schedule.Next(lastRun)
-	if now.Before(nextRun) {
-		return ctrl.Result{RequeueAfter: nextRun.Sub(now)}, nil
+	// Find the next tick that is still in the future. If ticks were missed
+	// (e.g. due to cooldown or a long-running previous run), advance past them.
+	nextTick := schedule.Next(lastRun)
+	if !nextTick.After(now) {
+		nextTick = schedule.Next(now)
 	}
 
-	result, err := r.scheduleRun(ctx, experiment, now)
-	if err != nil {
-		return result, err
+	if _, err := r.scheduleRun(ctx, experiment, now, nextTick); err != nil {
+		return ctrl.Result{}, err
 	}
 
-	// Requeue for the next scheduled tick.
-	nextAfterNow := schedule.Next(now)
-	return ctrl.Result{RequeueAfter: nextAfterNow.Sub(now)}, nil
+	// Requeue when the tick after nextTick is due, so we pre-create the
+	// following run as soon as the current one finishes.
+	nextAfterNext := schedule.Next(nextTick)
+	return ctrl.Result{RequeueAfter: nextAfterNext.Sub(time.Now())}, nil
 }
 
-func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chaosv1alpha1.Experiment, now time.Time) (ctrl.Result, error) {
+// scheduleRun creates an ExperimentRun for the given executeAt time.
+// executeAt is zero for Once experiments (execute immediately) and the next
+// cron tick for Repeat experiments (pre-created before the tick arrives).
+func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chaosv1alpha1.Experiment, now time.Time, executeAt time.Time) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Concurrency check: if there is an active run, skip.
@@ -141,7 +147,8 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 		}
 	}
 
-	// Cooldown check.
+	// Cooldown check is based on when the previous run was scheduled to execute,
+	// not when it was created.
 	if experiment.Spec.RunPolicy.Cooldown != nil && experiment.Status.LastScheduleTime != nil {
 		cooldownEnd := experiment.Status.LastScheduleTime.Add(experiment.Spec.RunPolicy.Cooldown.Duration)
 		if now.Before(cooldownEnd) {
@@ -157,11 +164,21 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 		return ctrl.Result{}, err
 	}
 
-	// Use the truncated minute as the name suffix so concurrent workers racing
-	// on the same cron tick produce an identical name and the second writer gets
-	// AlreadyExists rather than creating a duplicate run.
-	runName := fmt.Sprintf("%s-%d", experiment.Name, now.Truncate(time.Minute).Unix())
+	// Derive a deterministic run name from the execution tick. Concurrent workers
+	// racing on the same tick will produce the same name and the second will get
+	// AlreadyExists, which is silently ignored.
+	nameBase := executeAt
+	if nameBase.IsZero() {
+		nameBase = now
+	}
+	runName := fmt.Sprintf("%s-%d", experiment.Name, nameBase.Truncate(time.Minute).Unix())
 	scheduledAt := metav1.NewTime(now)
+
+	var execAtPtr *metav1.Time
+	if !executeAt.IsZero() && executeAt.After(now) {
+		t := metav1.NewTime(executeAt)
+		execAtPtr = &t
+	}
 
 	run := &chaosv1alpha1.ExperimentRun{
 		ObjectMeta: metav1.ObjectMeta{
@@ -173,18 +190,17 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 		},
 		Spec: chaosv1alpha1.ExperimentRunSpec{
 			ExperimentName: experiment.Name,
+			ExecuteAt:      execAtPtr,
 		},
 	}
 
 	if len(targets) == 0 {
 		if err := r.Create(ctx, run); err != nil {
 			if errors.IsAlreadyExists(err) {
-				// A concurrent worker already created the run for this tick.
 				return ctrl.Result{}, nil
 			}
 			return ctrl.Result{}, err
 		}
-		// r.Create strips status (status subresource); re-set and update.
 		run.Status.Phase = chaosv1alpha1.PhaseSkipped
 		run.Status.ScheduledAt = &scheduledAt
 		if err := r.Status().Update(ctx, run); err != nil {
@@ -195,12 +211,10 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 	} else {
 		if err := r.Create(ctx, run); err != nil {
 			if errors.IsAlreadyExists(err) {
-				// A concurrent worker already created the run for this tick.
 				return ctrl.Result{}, nil
 			}
 			return ctrl.Result{}, err
 		}
-		// r.Create strips status (status subresource); re-set and update.
 		run.Status.Phase = chaosv1alpha1.PhasePreviewGenerated
 		run.Status.PreviewTargets = targets
 		run.Status.ScheduledAt = &scheduledAt
@@ -211,9 +225,11 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 		log.Info("ExperimentRun created", "run", runName, "targets", targets)
 	}
 
-	// Update Experiment status.
+	// LastScheduleTime tracks the executeAt time of the latest scheduled run so
+	// that the next reconcile advances correctly to the tick after it.
+	lastSchedule := metav1.NewTime(nameBase)
 	patch := client.MergeFrom(experiment.DeepCopy())
-	experiment.Status.LastScheduleTime = &scheduledAt
+	experiment.Status.LastScheduleTime = &lastSchedule
 	experiment.Status.ActiveRun = runName
 	if err := r.Status().Patch(ctx, experiment, patch); err != nil {
 		return ctrl.Result{}, err

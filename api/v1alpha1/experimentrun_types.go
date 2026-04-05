@@ -93,6 +93,12 @@ type ExperimentRunSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	Approved bool `json:"approved,omitempty"`
+
+	// executeAt is the scheduled wall-clock time at which the chaos action should
+	// begin. The executor waits in Approved phase until this time arrives.
+	// For Once experiments this field is unset and execution starts immediately.
+	// +optional
+	ExecuteAt *metav1.Time `json:"executeAt,omitempty"`
 }
 
 // ExperimentRunStatus defines the observed state of ExperimentRun.
@@ -133,6 +139,7 @@ type ExperimentRunStatus struct {
 // +kubebuilder:printcolumn:name="Experiment",type=string,JSONPath=`.spec.experimentName`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Approved",type=boolean,JSONPath=`.spec.approved`
+// +kubebuilder:printcolumn:name="ExecuteAt",type=date,JSONPath=`.spec.executeAt`
 // +kubebuilder:printcolumn:name="ScheduledAt",type=date,JSONPath=`.status.scheduledAt`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
