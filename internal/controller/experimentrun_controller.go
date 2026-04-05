@@ -120,6 +120,14 @@ func (r *ExperimentRunReconciler) handlePreviewGenerated(
 	run *chaosv1alpha1.ExperimentRun,
 	experiment *chaosv1alpha1.Experiment,
 ) (ctrl.Result, error) {
+	// The ExperimentReconciler sets Phase and then calls Status().Update() in a
+	// second request. If this reconcile was triggered by the Create event before
+	// that update landed in the cache, PreviewTargets and ScheduledAt are still
+	// empty. Requeue immediately so we pick up the completed status.
+	if run.Status.ScheduledAt == nil || len(run.Status.PreviewTargets) == 0 {
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	if experiment.Spec.Approval != nil && experiment.Spec.Approval.Required {
 		if err := r.sendWebhook(ctx, run, experiment); err != nil {
 			// Return the error so controller-runtime retries with exponential backoff.
