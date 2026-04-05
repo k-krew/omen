@@ -47,13 +47,11 @@ const (
 // ExperimentRunReconciler reconciles a ExperimentRun object
 type ExperimentRunReconciler struct {
 	client.Client
-	Scheme         *runtime.Scheme
-	Recorder       record.EventRecorder
-	HTTPClient     *http.Client
-	WebhookTimeout time.Duration
-	// activeRuns tracks UIDs of runs whose execution goroutines are in-flight in this
-	// process. Used to distinguish a live Running run from one that survived a restart.
-	activeRuns sync.Map
+	Scheme              *runtime.Scheme
+	Recorder            record.EventRecorder
+	HTTPClient          *http.Client
+	WebhookTimeout      time.Duration
+	ControllerStartTime time.Time
 }
 
 // +kubebuilder:rbac:groups=chaos.kreicer.dev,resources=experimentruns,verbs=get;list;watch;create;update;patch;delete
@@ -80,15 +78,16 @@ func (r *ExperimentRunReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Guard against Running phase surviving a controller restart.
-	// If the UID is in activeRuns, execution is still in progress in this process —
-	// do not interfere. If it is not, the run is orphaned from a previous process
-	// and must be marked Failed to prevent split-brain.
+	// A run whose StartedAt predates this process's start time was left in Running
+	// by a previous process and must be marked Failed (split-brain prevention).
+	// A run whose StartedAt is after ControllerStartTime is executing in this process;
+	// the concurrent reconcile triggered by the Running patch is safe to ignore.
 	if run.Status.Phase == chaosv1alpha1.PhaseRunning {
-		if _, active := r.activeRuns.Load(run.UID); active {
-			return ctrl.Result{}, nil
+		if run.Status.StartedAt != nil && run.Status.StartedAt.Time.Before(r.ControllerStartTime) {
+			log.Info("run found in Running phase from previous controller process, marking Failed")
+			return r.transitionPhase(ctx, run, chaosv1alpha1.PhaseFailed)
 		}
-		log.Info("run found in Running phase after restart, marking Failed")
-		return r.transitionPhase(ctx, run, chaosv1alpha1.PhaseFailed)
+		return ctrl.Result{}, nil
 	}
 
 	// Fetch parent Experiment for approval config.
@@ -178,11 +177,6 @@ func (r *ExperimentRunReconciler) handleApproved(
 	experiment *chaosv1alpha1.Experiment,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-
-	// Register before transitioning to Running so the restart guard in concurrent
-	// reconcile loops sees the UID and does not mark this run Failed.
-	r.activeRuns.Store(run.UID, struct{}{})
-	defer r.activeRuns.Delete(run.UID)
 
 	if _, err := r.transitionPhase(ctx, run, chaosv1alpha1.PhaseRunning); err != nil {
 		return ctrl.Result{}, err
@@ -390,6 +384,7 @@ func (r *ExperimentRunReconciler) transitionPhase(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ExperimentRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.ControllerStartTime = time.Now()
 	r.Recorder = mgr.GetEventRecorderFor("experimentrun-controller") //nolint:staticcheck
 	if r.HTTPClient == nil {
 		timeout := r.WebhookTimeout

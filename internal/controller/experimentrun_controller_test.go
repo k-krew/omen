@@ -40,9 +40,10 @@ var _ = Describe("ExperimentRun Controller", func() {
 
 	newReconciler := func(httpClient *http.Client) *ExperimentRunReconciler {
 		r := &ExperimentRunReconciler{
-			Client:   k8sClient,
-			Scheme:   k8sClient.Scheme(),
-			Recorder: record.NewFakeRecorder(10),
+			Client:              k8sClient,
+			Scheme:              k8sClient.Scheme(),
+			Recorder:            record.NewFakeRecorder(10),
+			ControllerStartTime: time.Now(),
 		}
 		if httpClient != nil {
 			r.HTTPClient = httpClient
@@ -113,6 +114,11 @@ var _ = Describe("ExperimentRun Controller", func() {
 
 			run := makeRun("run-restart", "exp-restart", chaosv1alpha1.PhaseRunning, nil)
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, run) })
+
+			// Simulate a run that was started before this controller process began.
+			pastTime := metav1.NewTime(time.Now().Add(-1 * time.Hour))
+			run.Status.StartedAt = &pastTime
+			Expect(k8sClient.Status().Update(ctx, run)).To(Succeed())
 
 			r := newReconciler(nil)
 			_, err := r.Reconcile(ctx, reconcile.Request{
