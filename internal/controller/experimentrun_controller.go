@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -38,16 +39,21 @@ import (
 )
 
 const (
-	webhookTimeout     = 10 * time.Second
-	defaultApprovalTTL = 10 * time.Minute
+	defaultWebhookTimeout = 10 * time.Second
+	defaultApprovalTTL    = 10 * time.Minute
+	deletionConcurrency   = 5
 )
 
 // ExperimentRunReconciler reconciles a ExperimentRun object
 type ExperimentRunReconciler struct {
 	client.Client
-	Scheme     *runtime.Scheme
-	Recorder   record.EventRecorder
-	HTTPClient *http.Client
+	Scheme         *runtime.Scheme
+	Recorder       record.EventRecorder
+	HTTPClient     *http.Client
+	WebhookTimeout time.Duration
+	// activeRuns tracks UIDs of runs whose execution goroutines are in-flight in this
+	// process. Used to distinguish a live Running run from one that survived a restart.
+	activeRuns sync.Map
 }
 
 // +kubebuilder:rbac:groups=chaos.kreicer.dev,resources=experimentruns,verbs=get;list;watch;create;update;patch;delete
@@ -74,7 +80,13 @@ func (r *ExperimentRunReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Guard against Running phase surviving a controller restart.
+	// If the UID is in activeRuns, execution is still in progress in this process —
+	// do not interfere. If it is not, the run is orphaned from a previous process
+	// and must be marked Failed to prevent split-brain.
 	if run.Status.Phase == chaosv1alpha1.PhaseRunning {
+		if _, active := r.activeRuns.Load(run.UID); active {
+			return ctrl.Result{}, nil
+		}
 		log.Info("run found in Running phase after restart, marking Failed")
 		return r.transitionPhase(ctx, run, chaosv1alpha1.PhaseFailed)
 	}
@@ -96,8 +108,7 @@ func (r *ExperimentRunReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	case chaosv1alpha1.PhaseApproved:
 		return r.handleApproved(ctx, run, experiment)
 	case "":
-		// Newly created run with no phase set yet - shouldn't happen after Phase 3
-		// but handle defensively.
+		// Newly created run with no phase set yet - handle defensively.
 		return r.transitionPhase(ctx, run, chaosv1alpha1.PhasePreviewGenerated)
 	}
 
@@ -112,9 +123,11 @@ func (r *ExperimentRunReconciler) handlePreviewGenerated(
 ) (ctrl.Result, error) {
 	if experiment.Spec.Approval != nil && experiment.Spec.Approval.Required {
 		if err := r.sendWebhook(ctx, run, experiment); err != nil {
-			// Webhook delivery failure aborts the run per the PRD.
+			// Return the error so controller-runtime retries with exponential backoff.
+			// The run only becomes Failed if it reaches the approval TTL while still
+			// in PendingApproval, not on a transient network error here.
 			r.Recorder.Eventf(run, corev1.EventTypeWarning, "WebhookFailed", "webhook delivery failed: %v", err)
-			return r.transitionPhase(ctx, run, chaosv1alpha1.PhaseFailed)
+			return ctrl.Result{}, err
 		}
 		r.Recorder.Event(run, corev1.EventTypeNormal, "AwaitingApproval", "waiting for manual approval")
 		return r.transitionPhase(ctx, run, chaosv1alpha1.PhasePendingApproval)
@@ -166,6 +179,11 @@ func (r *ExperimentRunReconciler) handleApproved(
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Register before transitioning to Running so the restart guard in concurrent
+	// reconcile loops sees the UID and does not mark this run Failed.
+	r.activeRuns.Store(run.UID, struct{}{})
+	defer r.activeRuns.Delete(run.UID)
+
 	if _, err := r.transitionPhase(ctx, run, chaosv1alpha1.PhaseRunning); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -175,19 +193,33 @@ func (r *ExperimentRunReconciler) handleApproved(
 	now := metav1.Now()
 	run.Status.StartedAt = &now
 
-	var results []chaosv1alpha1.TargetResult
+	targets := run.Status.PreviewTargets
+	results := make([]chaosv1alpha1.TargetResult, len(targets))
+
+	// Execute pod deletions concurrently, bounded by deletionConcurrency.
+	sem := make(chan struct{}, deletionConcurrency)
+	var wg sync.WaitGroup
+	for i, target := range targets {
+		wg.Add(1)
+		go func(idx int, t string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			result := r.executeDeletePod(ctx, run.Namespace, t, experiment.Spec.DryRun)
+			results[idx] = result
+			log.Info("target action completed", "target", t, "status", result.Status, "reason", result.Reason)
+		}(i, target)
+	}
+	wg.Wait()
+
 	successCount := 0
 	failedCount := 0
-
-	for _, target := range run.Status.PreviewTargets {
-		result := r.executeDeletePod(ctx, run.Namespace, target, experiment.Spec.DryRun)
-		results = append(results, result)
-		if result.Status == chaosv1alpha1.TargetResultSuccess {
+	for _, res := range results {
+		if res.Status == chaosv1alpha1.TargetResultSuccess {
 			successCount++
 		} else {
 			failedCount++
 		}
-		log.Info("target action completed", "target", target, "status", result.Status, "reason", result.Reason)
 	}
 
 	completedAt := metav1.Now()
@@ -310,12 +342,17 @@ func (r *ExperimentRunReconciler) sendWebhook(ctx context.Context, run *chaosv1a
 		return err
 	}
 
-	httpClient := r.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: webhookTimeout}
+	timeout := r.WebhookTimeout
+	if timeout == 0 {
+		timeout = defaultWebhookTimeout
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, webhookTimeout)
+	httpClient := r.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: timeout}
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(body))
@@ -355,7 +392,11 @@ func (r *ExperimentRunReconciler) transitionPhase(
 func (r *ExperimentRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("experimentrun-controller") //nolint:staticcheck
 	if r.HTTPClient == nil {
-		r.HTTPClient = &http.Client{Timeout: webhookTimeout}
+		timeout := r.WebhookTimeout
+		if timeout == 0 {
+			timeout = defaultWebhookTimeout
+		}
+		r.HTTPClient = &http.Client{Timeout: timeout}
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&chaosv1alpha1.ExperimentRun{}).

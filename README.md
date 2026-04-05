@@ -36,14 +36,24 @@ helm install omen oci://ghcr.io/k-krew/charts/omen \
   --create-namespace \
   --set image.tag=0.1.0 \
   --set manager.leaderElect=true \
-  --set resources.limits.memory=256Mi
+  --set resources.limits.memory=256Mi \
+  --set manager.webhookTimeout=30s
 ```
+
+### Controller flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--webhook-timeout` | `10s` | Timeout for outgoing approval webhook HTTP requests. Transient failures are retried by the controller with exponential backoff; the run only fails if still undelivered when the approval TTL expires. |
+| `--leader-elect` | `false` | Enable leader election for HA deployments. |
+| `--metrics-bind-address` | `0` | Address for the metrics endpoint (`0` disables it). |
+| `--health-probe-bind-address` | `:8081` | Address for liveness/readiness probes. |
 
 ## Run locally (against Kind or Minikube)
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - `kubebuilder` v4
 - `kubectl` pointing at a local cluster
 
