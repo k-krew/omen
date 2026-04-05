@@ -157,7 +157,10 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 		return ctrl.Result{}, err
 	}
 
-	runName := fmt.Sprintf("%s-%d", experiment.Name, now.Unix())
+	// Use the truncated minute as the name suffix so concurrent workers racing
+	// on the same cron tick produce an identical name and the second writer gets
+	// AlreadyExists rather than creating a duplicate run.
+	runName := fmt.Sprintf("%s-%d", experiment.Name, now.Truncate(time.Minute).Unix())
 	scheduledAt := metav1.NewTime(now)
 
 	run := &chaosv1alpha1.ExperimentRun{
@@ -175,6 +178,10 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 
 	if len(targets) == 0 {
 		if err := r.Create(ctx, run); err != nil {
+			if errors.IsAlreadyExists(err) {
+				// A concurrent worker already created the run for this tick.
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, err
 		}
 		// r.Create strips status (status subresource); re-set and update.
@@ -187,6 +194,10 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 		log.Info("no targets found, run marked as Skipped", "run", runName)
 	} else {
 		if err := r.Create(ctx, run); err != nil {
+			if errors.IsAlreadyExists(err) {
+				// A concurrent worker already created the run for this tick.
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, err
 		}
 		// r.Create strips status (status subresource); re-set and update.
