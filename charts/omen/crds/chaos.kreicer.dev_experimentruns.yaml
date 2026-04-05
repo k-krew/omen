@@ -11,6 +11,9 @@ spec:
     kind: ExperimentRun
     listKind: ExperimentRunList
     plural: experimentruns
+    shortNames:
+    - erun
+    - eruns
     singular: experimentrun
   scope: Namespaced
   versions:
@@ -36,10 +39,19 @@ spec:
         description: ExperimentRun is the Schema for the experimentruns API
         properties:
           apiVersion:
-            description: APIVersion defines the versioned schema of this representation of an object.
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
-            description: Kind is a string value representing the REST resource this object represents.
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
@@ -48,7 +60,9 @@ spec:
             properties:
               approved:
                 default: false
-                description: approved must be patched to true by an external system to unblock execution when the parent Experiment requires approval.
+                description: |-
+                  approved must be patched to true by an external system to unblock execution
+                  when the parent Experiment requires approval.
                 type: boolean
               experimentName:
                 description: experimentName is the name of the parent Experiment.
@@ -78,14 +92,17 @@ spec:
                 - Expired
                 type: string
               previewTargets:
-                description: previewTargets is the fixed list of pod names selected at preview time. These targets are not recalculated during execution.
+                description: |-
+                  previewTargets is the fixed list of pod names selected at preview time.
+                  These targets are not recalculated during execution.
                 items:
                   type: string
                 type: array
               results:
                 description: results holds the per-target outcome after execution.
                 items:
-                  description: TargetResult records the outcome of the chaos action for one target pod.
+                  description: TargetResult records the outcome of the chaos action
+                    for one target pod.
                   properties:
                     reason:
                       description: reason is populated when status is Failed.
@@ -111,7 +128,8 @@ spec:
                   type: object
                 type: array
               scheduledAt:
-                description: scheduledAt records when this run was created by the scheduler.
+                description: scheduledAt records when this run was created by the
+                  scheduler.
                 format: date-time
                 type: string
               startedAt:

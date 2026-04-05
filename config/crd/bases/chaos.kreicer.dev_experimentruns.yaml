@@ -11,6 +11,9 @@ spec:
     kind: ExperimentRun
     listKind: ExperimentRunList
     plural: experimentruns
+    shortNames:
+    - erun
+    - eruns
     singular: experimentrun
   scope: Namespaced
   versions:

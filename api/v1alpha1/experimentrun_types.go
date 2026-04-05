@@ -129,6 +129,7 @@ type ExperimentRunStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=erun;eruns
 // +kubebuilder:printcolumn:name="Experiment",type=string,JSONPath=`.spec.experimentName`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Approved",type=boolean,JSONPath=`.spec.approved`

@@ -11,6 +11,9 @@ spec:
     kind: Experiment
     listKind: ExperimentList
     plural: experiments
+    shortNames:
+    - exp
+    - exps
     singular: experiment
   scope: Namespaced
   versions:

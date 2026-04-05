@@ -187,6 +187,7 @@ type ExperimentStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=exp;exps
 // +kubebuilder:printcolumn:name="Schedule",type=string,JSONPath=`.spec.runPolicy.schedule`
 // +kubebuilder:printcolumn:name="Paused",type=boolean,JSONPath=`.spec.paused`
 // +kubebuilder:printcolumn:name="ActiveRun",type=string,JSONPath=`.status.activeRun`
