@@ -139,7 +139,7 @@ type ExperimentRunStatus struct {
 // +kubebuilder:printcolumn:name="Experiment",type=string,JSONPath=`.spec.experimentName`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Approved",type=boolean,JSONPath=`.spec.approved`
-// +kubebuilder:printcolumn:name="ExecuteAt",type=date,JSONPath=`.spec.executeAt`
+// +kubebuilder:printcolumn:name="ExecuteAt",type=string,JSONPath=`.spec.executeAt`
 // +kubebuilder:printcolumn:name="ScheduledAt",type=date,JSONPath=`.status.scheduledAt`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

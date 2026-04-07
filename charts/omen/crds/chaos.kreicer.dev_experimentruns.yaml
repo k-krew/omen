@@ -29,7 +29,7 @@ spec:
       type: boolean
     - jsonPath: .spec.executeAt
       name: ExecuteAt
-      type: date
+      type: string
     - jsonPath: .status.scheduledAt
       name: ScheduledAt
       type: date
