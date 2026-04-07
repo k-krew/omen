@@ -112,8 +112,23 @@ func (r *ExperimentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		nextTick = schedule.Next(now)
 	}
 
-	if _, err := r.scheduleRun(ctx, experiment, now, nextTick); err != nil {
+	// If the experiment has an approval TTL and nextTick is closer than that
+	// TTL (i.e. the user would have virtually no time to approve the very first
+	// run), skip this immediate tick and schedule for the following one so the
+	// full approval window is available.
+	if experiment.Spec.Approval != nil && experiment.Spec.Approval.Required &&
+		experiment.Spec.Approval.TTL != nil &&
+		time.Until(nextTick) < experiment.Spec.Approval.TTL.Duration {
+		nextTick = schedule.Next(nextTick)
+	}
+
+	result, err := r.scheduleRun(ctx, experiment, now, nextTick)
+	if err != nil {
 		return ctrl.Result{}, err
+	}
+	// If scheduleRun requests a specific requeue (e.g. cooldown), honour it.
+	if result.Requeue || result.RequeueAfter > 0 {
+		return result, nil
 	}
 
 	// Requeue when the tick after nextTick is due, so we pre-create the
