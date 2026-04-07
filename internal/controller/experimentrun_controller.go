@@ -107,8 +107,9 @@ func (r *ExperimentRunReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	case chaosv1alpha1.PhaseApproved:
 		return r.handleApproved(ctx, run, experiment)
 	case "":
-		// Newly created run with no phase set yet - handle defensively.
-		return r.transitionPhase(ctx, run, chaosv1alpha1.PhasePreviewGenerated)
+		// Phase is not yet set by the parent ExperimentReconciler. Wait for the
+		// status update to arrive; the informer will re-trigger this reconcile.
+		return ctrl.Result{}, nil
 	}
 
 	return ctrl.Result{}, nil

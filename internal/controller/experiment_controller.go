@@ -211,10 +211,19 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 
 	if len(targets) == 0 {
 		if err := r.Create(ctx, run); err != nil {
-			if errors.IsAlreadyExists(err) {
+			if !errors.IsAlreadyExists(err) {
+				return ctrl.Result{}, err
+			}
+			// A previous Status().Update() may have failed after Create succeeded.
+			// Re-fetch the existing run; if it has no phase yet, repair its status.
+			existing := &chaosv1alpha1.ExperimentRun{}
+			if getErr := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Name}, existing); getErr != nil {
+				return ctrl.Result{}, getErr
+			}
+			if existing.Status.Phase != "" {
 				return ctrl.Result{}, nil
 			}
-			return ctrl.Result{}, err
+			run = existing
 		}
 		run.Status.Phase = chaosv1alpha1.PhaseSkipped
 		run.Status.ScheduledAt = &scheduledAt
@@ -225,10 +234,19 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 		log.Info("no targets found, run marked as Skipped", "run", runName)
 	} else {
 		if err := r.Create(ctx, run); err != nil {
-			if errors.IsAlreadyExists(err) {
+			if !errors.IsAlreadyExists(err) {
+				return ctrl.Result{}, err
+			}
+			// A previous Status().Update() may have failed after Create succeeded.
+			// Re-fetch the existing run; if it has no phase yet, repair its status.
+			existing := &chaosv1alpha1.ExperimentRun{}
+			if getErr := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Name}, existing); getErr != nil {
+				return ctrl.Result{}, getErr
+			}
+			if existing.Status.Phase != "" {
 				return ctrl.Result{}, nil
 			}
-			return ctrl.Result{}, err
+			run = existing
 		}
 		run.Status.Phase = chaosv1alpha1.PhasePreviewGenerated
 		run.Status.PreviewTargets = targets
