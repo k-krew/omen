@@ -105,10 +105,14 @@ func (r *ExperimentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		lastRun = experiment.CreationTimestamp.Time
 	}
 
-	// Find the next tick that is still in the future. If ticks were missed
-	// (e.g. due to cooldown or a long-running previous run), advance past them.
+	// LastScheduleTime stores the ExecuteAt of the last pre-created run.
+	// We use schedule.Next(lastRun) to find the following tick.
 	nextTick := schedule.Next(lastRun)
-	if !nextTick.After(now) {
+
+	// If the controller was down for a long time, lastRun might be very old.
+	// We don't want to create hundreds of runs in the past to "catch up".
+	// If nextTick is in the past, fast-forward to the next tick after 'now'.
+	if nextTick.Before(now) {
 		nextTick = schedule.Next(now)
 	}
 
