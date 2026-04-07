@@ -203,7 +203,7 @@ type ExperimentStatus struct {
 // +kubebuilder:printcolumn:name="Schedule",type=string,JSONPath=`.spec.runPolicy.schedule`
 // +kubebuilder:printcolumn:name="Paused",type=boolean,JSONPath=`.spec.paused`
 // +kubebuilder:printcolumn:name="ActiveRun",type=string,JSONPath=`.status.activeRun`
-// +kubebuilder:printcolumn:name="LastSchedule",type=date,JSONPath=`.status.lastScheduleTime`
+// +kubebuilder:printcolumn:name="LastSchedule",type=string,JSONPath=`.status.lastScheduleTime`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // Experiment is the Schema for the experiments API

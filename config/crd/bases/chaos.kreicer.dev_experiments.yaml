@@ -29,7 +29,7 @@ spec:
       type: string
     - jsonPath: .status.lastScheduleTime
       name: LastSchedule
-      type: date
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date

@@ -30,9 +30,6 @@ spec:
     - jsonPath: .spec.executeAt
       name: ExecuteAt
       type: string
-    - jsonPath: .status.scheduledAt
-      name: ScheduledAt
-      type: date
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
