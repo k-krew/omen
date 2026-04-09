@@ -99,6 +99,12 @@ type Mode struct {
 type Action struct {
 	// type is the chaos action to execute.
 	Type ActionType `json:"type"`
+
+	// force performs the action immediately without a grace period when true.
+	// Only applicable for delete_pod actions.
+	// +kubebuilder:default=false
+	// +optional
+	Force bool `json:"force,omitempty"`
 }
 
 // WebhookConfig holds the approval notification endpoint.

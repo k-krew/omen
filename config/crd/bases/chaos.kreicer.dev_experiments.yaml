@@ -67,6 +67,12 @@ spec:
                     enum:
                     - delete_pod
                     type: string
+                  force:
+                    default: false
+                    description: |-
+                      force performs the action immediately without a grace period when true.
+                      Only applicable for delete_pod actions.
+                    type: boolean
                 required:
                 - type
                 type: object
