@@ -62,17 +62,17 @@ spec:
                 description: action defines the chaos operation to perform on selected
                   targets.
                 properties:
-                  type:
-                    description: type is the chaos action to execute.
-                    enum:
-                    - delete_pod
-                    type: string
                   force:
                     default: false
                     description: |-
                       force performs the action immediately without a grace period when true.
                       Only applicable for delete_pod actions.
                     type: boolean
+                  type:
+                    description: type is the chaos action to execute.
+                    enum:
+                    - delete_pod
+                    type: string
                 required:
                 - type
                 type: object
