@@ -227,7 +227,7 @@ func (r *ExperimentRunReconciler) handleApproved(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			result := r.executeDeletePod(ctx, run.Namespace, t, experiment.Spec.DryRun)
+			result := r.executeDeletePod(ctx, run.Namespace, t, experiment.Spec.DryRun, experiment.Spec.Action.Force)
 			results[idx] = result
 			log.Info("target action completed", "target", t, "status", result.Status, "reason", result.Reason)
 		}(i, target)
@@ -270,7 +270,7 @@ func (r *ExperimentRunReconciler) handleApproved(
 }
 
 // executeDeletePod attempts to delete a single pod and returns the result.
-func (r *ExperimentRunReconciler) executeDeletePod(ctx context.Context, namespace, podName string, dryRun bool) chaosv1alpha1.TargetResult {
+func (r *ExperimentRunReconciler) executeDeletePod(ctx context.Context, namespace, podName string, dryRun bool, force bool) chaosv1alpha1.TargetResult {
 	log := logf.FromContext(ctx)
 
 	// Short-circuit: dry-run skips all real work including existence checks.
@@ -306,10 +306,12 @@ func (r *ExperimentRunReconciler) executeDeletePod(ctx context.Context, namespac
 		}
 	}
 
-	deleteOpts := &client.DeleteOptions{
-		GracePeriodSeconds: func() *int64 { v := int64(0); return &v }(),
+	var deleteOpts []client.DeleteOption
+	if force {
+		deleteOpts = append(deleteOpts, client.GracePeriodSeconds(0))
 	}
-	if err := r.Delete(ctx, pod, deleteOpts); err != nil {
+
+	if err := r.Delete(ctx, pod, deleteOpts...); err != nil {
 		if errors.IsNotFound(err) {
 			return chaosv1alpha1.TargetResult{
 				Target: podName,
