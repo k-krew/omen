@@ -19,6 +19,10 @@ Two CRDs are provided:
 - **Experiment** — defines the schedule, target selector, action, safety limits, and approval policy
 - **ExperimentRun** — a single execution instance created by the controller, holding the target preview, approval state, and results
 
+## Roadmap
+
+Curious about what's coming next? Check out our [Roadmap](ROADMAP.md) to see our plans for network chaos, advanced target filtering, ChatOps integrations, and more!
+
 ## Install via Helm
 
 ```bash
