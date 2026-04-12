@@ -42,6 +42,12 @@ const (
 	defaultWebhookTimeout = 10 * time.Second
 	defaultApprovalTTL    = 10 * time.Minute
 	deletionConcurrency   = 5
+	// approvedPollInterval caps the RequeueAfter for runs waiting in Approved so
+	// the controller recovers quickly after a VM pause or controller restart.
+	approvedPollInterval = 30 * time.Second
+	// missedExecutionGrace is the maximum time past ExecuteAt at which a run is
+	// still allowed to execute. Beyond this window the run is marked Expired.
+	missedExecutionGrace = 5 * time.Minute
 )
 
 // ExperimentRunReconciler reconciles a ExperimentRun object
@@ -200,9 +206,24 @@ func (r *ExperimentRunReconciler) handleApproved(
 
 	// For pre-created runs, wait in Approved until the scheduled execution time.
 	if run.Spec.ExecuteAt != nil {
-		if remaining := time.Until(run.Spec.ExecuteAt.Time); remaining > 0 {
+		remaining := time.Until(run.Spec.ExecuteAt.Time)
+		if remaining > 0 {
+			// Cap the requeue at approvedPollInterval so the controller wakes up
+			// frequently and recovers quickly from VM pauses or clock drift.
+			requeue := remaining
+			if requeue > approvedPollInterval {
+				requeue = approvedPollInterval
+			}
 			log.Info("waiting for ExecuteAt", "remainingSeconds", remaining.Seconds())
-			return ctrl.Result{RequeueAfter: remaining}, nil
+			return ctrl.Result{RequeueAfter: requeue}, nil
+		}
+		// ExecuteAt is in the past. Allow a short grace window for normal jitter;
+		// beyond that the run missed its execution slot and should not execute.
+		if missed := -remaining; missed > missedExecutionGrace {
+			log.Info("missed execution window, transitioning to Expired", "missedBy", missed.Round(time.Second))
+			r.Recorder.Eventf(run, corev1.EventTypeWarning, "MissedExecutionWindow",
+				"execution time passed %s ago, skipping run", missed.Round(time.Second))
+			return r.transitionPhase(ctx, run, chaosv1alpha1.PhaseExpired)
 		}
 	}
 
