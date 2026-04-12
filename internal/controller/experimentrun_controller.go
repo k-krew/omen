@@ -210,12 +210,8 @@ func (r *ExperimentRunReconciler) handleApproved(
 		if remaining > 0 {
 			// Cap the requeue at approvedPollInterval so the controller wakes up
 			// frequently and recovers quickly from VM pauses or clock drift.
-			requeue := remaining
-			if requeue > approvedPollInterval {
-				requeue = approvedPollInterval
-			}
 			log.Info("waiting for ExecuteAt", "remainingSeconds", remaining.Seconds())
-			return ctrl.Result{RequeueAfter: requeue}, nil
+			return ctrl.Result{RequeueAfter: min(remaining, approvedPollInterval)}, nil
 		}
 		// ExecuteAt is in the past. Allow a short grace window for normal jitter;
 		// beyond that the run missed its execution slot and should not execute.
