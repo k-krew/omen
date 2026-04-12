@@ -41,3 +41,4 @@ testbin/
 # Local Kubernetes configs (just in case)
 *.kubeconfig
 kubeconfig
+_*
