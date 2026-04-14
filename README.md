@@ -29,7 +29,7 @@ Curious about what's coming next? Check out our [Roadmap](ROADMAP.md) to see our
 helm install omen oci://ghcr.io/k-krew/charts/omen \
   --namespace omen-system \
   --create-namespace \
-  --version 0.1.0
+  --version <version>
 ```
 
 To customise the installation:
@@ -38,10 +38,11 @@ To customise the installation:
 helm install omen oci://ghcr.io/k-krew/charts/omen \
   --namespace omen-system \
   --create-namespace \
-  --set image.tag=0.1.0 \
+  --version <version> \
   --set manager.leaderElect=true \
   --set resources.limits.memory=256Mi \
-  --set manager.webhookTimeout=30s
+  --set manager.webhookTimeout=30s \
+  --set manager.protectedNamespaces="{kube-system,omen-system,kube-public,my-critical-ns}"
 ```
 
 ### Controller flags
@@ -52,6 +53,27 @@ helm install omen oci://ghcr.io/k-krew/charts/omen \
 | `--leader-elect` | `false` | Enable leader election for HA deployments. |
 | `--metrics-bind-address` | `0` | Address for the metrics endpoint (`0` disables it). |
 | `--health-probe-bind-address` | `:8081` | Address for liveness/readiness probes. |
+| `--protected-namespaces` | `kube-system,omen-system,kube-public` | Comma-separated list of namespaces that cannot be targeted by any experiment. Enforced at both the validating webhook and target selection time. |
+
+## Safety: Protected Namespaces
+
+Omen enforces a list of protected namespaces that can never be targeted, regardless of what an `Experiment` specifies. The defaults are `kube-system`, `omen-system`, and `kube-public`.
+
+The list is configured via the `--protected-namespaces` flag (comma-separated) and exposed in the Helm chart as `manager.protectedNamespaces`:
+
+```yaml
+manager:
+  protectedNamespaces:
+    - kube-system
+    - omen-system
+    - kube-public
+    - my-critical-namespace
+```
+
+Protection is enforced in two places:
+
+- **Validating webhook** — rejects `Experiment` objects whose `spec.selector.namespace` is in the protected list at admission time.
+- **Controller** — filters out any pods in protected namespaces during target selection, even for cluster-scoped selectors.
 
 ## Run locally (against Kind or Minikube)
 
@@ -75,9 +97,9 @@ The controller reads `POD_NAMESPACE` to exclude its own pods from target selecti
 POD_NAMESPACE=omen-system GOTOOLCHAIN=local make run
 ```
 
-## Example Experiment
+## Example Experiments
 
-### One-shot, no approval
+### One-shot, no approval, fixed count
 
 ```yaml
 apiVersion: chaos.kreicer.dev/v1alpha1
@@ -99,9 +121,33 @@ spec:
     type: delete_pod
   safety:
     maxTargets: 1
-    denyNamespaces:
-      - kube-system
 ```
+
+### One-shot, percentage-based target selection
+
+```yaml
+apiVersion: chaos.kreicer.dev/v1alpha1
+kind: Experiment
+metadata:
+  name: kill-third-of-fleet
+  namespace: default
+spec:
+  runPolicy:
+    type: Once
+  selector:
+    namespace: default
+    labels:
+      app: my-app
+  mode:
+    type: random
+    percent: 33   # kill ~33% of matching pods, minimum 1
+  action:
+    type: delete_pod
+  safety:
+    maxTargets: 5
+```
+
+`percent` is mutually exclusive with `count`. The calculated pod count is always rounded up and floored at 1, so the experiment always has an effect even against small replica sets. `safety.maxTargets` is applied as a hard cap after the percentage is resolved.
 
 ### Recurring, with approval
 
@@ -133,9 +179,6 @@ spec:
       url: https://hooks.example.com/omen-approval
   safety:
     maxTargets: 2
-    denyNamespaces:
-      - kube-system
-      - omen-system
 ```
 
 To approve the run, patch the generated `ExperimentRun`:
@@ -149,6 +192,20 @@ kubectl patch experimentrun <run-name> \
 ### Dry run
 
 Set `dryRun: true` on the `Experiment` to preview target selection without executing the action. Targets are recorded in `ExperimentRun.status.previewTargets` and results are marked `Success` without any pods being deleted.
+
+## Observability
+
+Every phase transition of an `ExperimentRun` emits a standard Kubernetes Event on the object. Use `kubectl describe` to follow the lifecycle:
+
+```bash
+kubectl describe experimentrun <run-name>
+```
+
+Events use `Normal` type for successful transitions (`PreviewGenerated`, `Approved`, `Running`, `Completed`) and `Warning` for failure states (`Failed`, `Expired`).
+
+## Safe Deletion
+
+`Experiment` objects carry a finalizer (`chaos.omen.com/finalizer`). When an `Experiment` is deleted, the controller first deletes all owned `ExperimentRun`s and waits for them to be removed before releasing the finalizer. This prevents orphaned runs from executing chaos actions after the parent is gone.
 
 ## Development
 
