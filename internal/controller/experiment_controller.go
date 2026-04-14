@@ -440,10 +440,7 @@ func (r *ExperimentReconciler) selectTargets(ctx context.Context, experiment *ch
 	var count int
 	if experiment.Spec.Mode.Percent != nil {
 		// Round up so that e.g. 10% of 2 pods = 1 pod (not 0).
-		count = int(math.Ceil(float64(len(eligible)) * float64(*experiment.Spec.Mode.Percent) / 100.0))
-		if count < 1 {
-			count = 1
-		}
+		count = max(int(math.Ceil(float64(len(eligible))*float64(*experiment.Spec.Mode.Percent)/100.0)), 1)
 	} else {
 		count = experiment.Spec.Mode.Count
 	}
