@@ -33,9 +33,6 @@ spec:
     - jsonPath: .status.summary.failed
       name: Failed
       type: integer
-    - jsonPath: .spec.approved
-      name: Approved
-      type: boolean
     - jsonPath: .spec.executeAt
       name: ExecuteAt
       type: string

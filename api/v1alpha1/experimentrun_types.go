@@ -141,7 +141,6 @@ type ExperimentRunStatus struct {
 // +kubebuilder:printcolumn:name="Total",type=integer,JSONPath=`.status.summary.total`
 // +kubebuilder:printcolumn:name="Success",type=integer,JSONPath=`.status.summary.success`
 // +kubebuilder:printcolumn:name="Failed",type=integer,JSONPath=`.status.summary.failed`
-// +kubebuilder:printcolumn:name="Approved",type=boolean,JSONPath=`.spec.approved`
 // +kubebuilder:printcolumn:name="ExecuteAt",type=string,JSONPath=`.spec.executeAt`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
