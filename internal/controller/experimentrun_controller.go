@@ -415,7 +415,7 @@ func (r *ExperimentRunReconciler) sendWebhook(ctx context.Context, run *chaosv1a
 	return nil
 }
 
-// transitionPhase updates the run's phase in status and emits relevant events.
+// transitionPhase updates the run's phase in status and emits a Kubernetes Event.
 func (r *ExperimentRunReconciler) transitionPhase(
 	ctx context.Context,
 	run *chaosv1alpha1.ExperimentRun,
@@ -426,6 +426,13 @@ func (r *ExperimentRunReconciler) transitionPhase(
 	if err := r.Status().Patch(ctx, run, patch); err != nil {
 		return ctrl.Result{}, err
 	}
+
+	eventType := corev1.EventTypeNormal
+	if phase == chaosv1alpha1.PhaseFailed || phase == chaosv1alpha1.PhaseExpired {
+		eventType = corev1.EventTypeWarning
+	}
+	r.Recorder.Eventf(run, eventType, "PhaseTransition", "phase changed to %s", phase)
+
 	return ctrl.Result{}, nil
 }
 
