@@ -40,6 +40,9 @@ spec:
             - --webhook-cert-name={{ .Values.webhook.tlsCertName }}
             - --webhook-cert-key={{ .Values.webhook.tlsCertKey }}
             {{- end }}
+            {{- if .Values.manager.protectedNamespaces }}
+            - --protected-namespaces={{ join "," .Values.manager.protectedNamespaces }}
+            {{- end }}
           ports:
             - name: webhook-server
               containerPort: {{ .Values.webhook.port }}

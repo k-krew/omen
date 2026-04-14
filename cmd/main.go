@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -64,6 +65,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var webhookTimeout time.Duration
+	var protectedNamespacesFlag string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -84,6 +86,8 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.DurationVar(&webhookTimeout, "webhook-timeout", 10*time.Second,
 		"Timeout for outgoing approval webhook HTTP requests.")
+	flag.StringVar(&protectedNamespacesFlag, "protected-namespaces", "kube-system,omen-system,kube-public",
+		"Comma-separated list of namespaces that are protected from chaos experiments.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -183,9 +187,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	protectedNamespaces := splitTrimmed(protectedNamespacesFlag)
+	setupLog.Info("Protected namespaces configured", "namespaces", protectedNamespaces)
+
 	if err := (&controller.ExperimentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		ProtectedNamespaces: protectedNamespaces,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Experiment")
 		os.Exit(1)
@@ -198,7 +206,7 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "ExperimentRun")
 		os.Exit(1)
 	}
-	if err := omenwebhook.SetupExperimentWebhookWithManager(mgr); err != nil {
+	if err := omenwebhook.SetupExperimentWebhookWithManager(mgr, protectedNamespaces); err != nil {
 		setupLog.Error(err, "Failed to create webhook", "webhook", "Experiment")
 		os.Exit(1)
 	}
@@ -218,4 +226,17 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+// splitTrimmed splits a comma-separated string and trims whitespace from each element.
+// Empty elements (from leading/trailing commas) are discarded.
+func splitTrimmed(s string) []string {
+	parts := strings.Split(s, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			result = append(result, t)
+		}
+	}
+	return result
 }

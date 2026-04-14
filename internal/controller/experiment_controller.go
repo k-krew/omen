@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"os"
 	"sort"
@@ -33,22 +34,25 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	chaosv1alpha1 "github.com/k-krew/omen/api/v1alpha1"
 )
 
 const (
-	omenNamespaceEnv = "POD_NAMESPACE"
-	omenAppLabel     = "app.kubernetes.io/name"
-	omenAppName      = "omen"
+	omenNamespaceEnv    = "POD_NAMESPACE"
+	omenAppLabel        = "app.kubernetes.io/name"
+	omenAppName         = "omen"
+	experimentFinalizer = "chaos.omen.com/finalizer"
 )
 
 // ExperimentReconciler reconciles a Experiment object
 type ExperimentReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme              *runtime.Scheme
+	Recorder            record.EventRecorder
+	ProtectedNamespaces []string
 }
 
 // +kubebuilder:rbac:groups=chaos.kreicer.dev,resources=experiments,verbs=get;list;watch;create;update;patch;delete
@@ -67,6 +71,21 @@ func (r *ExperimentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Handle deletion: clean up all associated ExperimentRuns before allowing
+	// the Experiment to be removed from the API server.
+	if !experiment.DeletionTimestamp.IsZero() {
+		return r.handleDeletion(ctx, experiment)
+	}
+
+	// Ensure the finalizer is present so we can intercept deletion.
+	if !controllerutil.ContainsFinalizer(experiment, experimentFinalizer) {
+		patch := client.MergeFrom(experiment.DeepCopy())
+		controllerutil.AddFinalizer(experiment, experimentFinalizer)
+		if err := r.Patch(ctx, experiment, patch); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if experiment.Spec.Paused {
@@ -279,6 +298,47 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 	return ctrl.Result{}, nil
 }
 
+// handleDeletion deletes all owned ExperimentRuns and removes the finalizer.
+func (r *ExperimentReconciler) handleDeletion(ctx context.Context, experiment *chaosv1alpha1.Experiment) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if !controllerutil.ContainsFinalizer(experiment, experimentFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	var runList chaosv1alpha1.ExperimentRunList
+	if err := r.List(ctx, &runList, client.InNamespace(experiment.Namespace)); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	var remaining int
+	for i := range runList.Items {
+		run := &runList.Items[i]
+		if run.Spec.ExperimentName != experiment.Name {
+			continue
+		}
+		if run.DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, run); client.IgnoreNotFound(err) != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		remaining++
+	}
+
+	if remaining > 0 {
+		log.Info("waiting for ExperimentRuns to be deleted", "remaining", remaining)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	patch := client.MergeFrom(experiment.DeepCopy())
+	controllerutil.RemoveFinalizer(experiment, experimentFinalizer)
+	if err := r.Patch(ctx, experiment, patch); err != nil {
+		return ctrl.Result{}, err
+	}
+	log.Info("Experiment deleted, finalizer removed")
+	return ctrl.Result{}, nil
+}
+
 func (r *ExperimentReconciler) pruneHistory(ctx context.Context, experiment *chaosv1alpha1.Experiment) error {
 	var runList chaosv1alpha1.ExperimentRunList
 	if err := r.List(ctx, &runList, client.InNamespace(experiment.Namespace)); err != nil {
@@ -343,12 +403,15 @@ func (r *ExperimentReconciler) selectTargets(ctx context.Context, experiment *ch
 	// Determine Omen's own namespace for self-exclusion.
 	omenNS := os.Getenv(omenNamespaceEnv)
 
-	// Build deny namespace set.
+	// Build deny namespace set from safety spec, protected namespaces, and self-exclusion.
 	denyNS := map[string]struct{}{}
 	if experiment.Spec.Safety != nil {
 		for _, ns := range experiment.Spec.Safety.DenyNamespaces {
 			denyNS[ns] = struct{}{}
 		}
+	}
+	for _, ns := range r.ProtectedNamespaces {
+		denyNS[ns] = struct{}{}
 	}
 	if omenNS != "" {
 		denyNS[omenNS] = struct{}{}
@@ -373,8 +436,19 @@ func (r *ExperimentReconciler) selectTargets(ctx context.Context, experiment *ch
 		return nil, nil
 	}
 
-	// Determine count, respecting maxTargets.
-	count := experiment.Spec.Mode.Count
+	// Determine count from either fixed count or percentage.
+	var count int
+	if experiment.Spec.Mode.Percent != nil {
+		// Round up so that e.g. 10% of 2 pods = 1 pod (not 0).
+		count = int(math.Ceil(float64(len(eligible)) * float64(*experiment.Spec.Mode.Percent) / 100.0))
+		if count < 1 {
+			count = 1
+		}
+	} else {
+		count = experiment.Spec.Mode.Count
+	}
+
+	// Apply maxTargets cap.
 	if experiment.Spec.Safety != nil && experiment.Spec.Safety.MaxTargets != nil {
 		if count > *experiment.Spec.Safety.MaxTargets {
 			count = *experiment.Spec.Safety.MaxTargets

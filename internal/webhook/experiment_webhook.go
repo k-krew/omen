@@ -29,23 +29,25 @@ import (
 )
 
 // ExperimentValidator implements a validating webhook for Experiment.
-type ExperimentValidator struct{}
+type ExperimentValidator struct {
+	ProtectedNamespaces []string
+}
 
 // SetupExperimentWebhookWithManager registers the validating webhook.
-func SetupExperimentWebhookWithManager(mgr ctrl.Manager) error {
+func SetupExperimentWebhookWithManager(mgr ctrl.Manager, protectedNamespaces []string) error {
 	return ctrl.NewWebhookManagedBy(mgr, &chaosv1alpha1.Experiment{}).
-		WithValidator(&ExperimentValidator{}).
+		WithValidator(&ExperimentValidator{ProtectedNamespaces: protectedNamespaces}).
 		Complete()
 }
 
 // ValidateCreate validates a newly created Experiment.
 func (v *ExperimentValidator) ValidateCreate(_ context.Context, experiment *chaosv1alpha1.Experiment) (admission.Warnings, error) {
-	return nil, validateExperiment(experiment)
+	return nil, v.validateExperiment(experiment)
 }
 
 // ValidateUpdate validates an update to an existing Experiment.
 func (v *ExperimentValidator) ValidateUpdate(_ context.Context, _, newExperiment *chaosv1alpha1.Experiment) (admission.Warnings, error) {
-	return nil, validateExperiment(newExperiment)
+	return nil, v.validateExperiment(newExperiment)
 }
 
 // ValidateDelete is a no-op; deletions are always allowed.
@@ -53,25 +55,50 @@ func (v *ExperimentValidator) ValidateDelete(_ context.Context, _ *chaosv1alpha1
 	return nil, nil
 }
 
-func validateExperiment(experiment *chaosv1alpha1.Experiment) error {
+func (v *ExperimentValidator) validateExperiment(experiment *chaosv1alpha1.Experiment) error {
 	var allErrs field.ErrorList
 
 	specPath := field.NewPath("spec")
 
-	// Validate mode.count > 0 (already enforced by kubebuilder marker, but belt-and-suspenders).
-	if experiment.Spec.Mode.Count < 1 {
-		allErrs = append(allErrs, field.Invalid(
-			specPath.Child("mode", "count"), experiment.Spec.Mode.Count,
-			"must be at least 1",
-		))
+	modePath := specPath.Child("mode")
+	hasCount := experiment.Spec.Mode.Count > 0
+	hasPercent := experiment.Spec.Mode.Percent != nil
+
+	// Exactly one of count or percent must be set.
+	if !hasCount && !hasPercent {
+		allErrs = append(allErrs, field.Required(modePath,
+			"one of count or percent must be set"))
+	}
+	if hasCount && hasPercent {
+		allErrs = append(allErrs, field.Invalid(modePath, nil,
+			"count and percent are mutually exclusive"))
 	}
 
-	// Validate mode.count does not exceed safety.maxTargets.
-	if experiment.Spec.Safety != nil && experiment.Spec.Safety.MaxTargets != nil {
-		if experiment.Spec.Mode.Count > *experiment.Spec.Safety.MaxTargets {
+	// Validate count when set.
+	if hasCount {
+		if experiment.Spec.Mode.Count < 1 {
 			allErrs = append(allErrs, field.Invalid(
-				specPath.Child("mode", "count"), experiment.Spec.Mode.Count,
-				fmt.Sprintf("must not exceed safety.maxTargets (%d)", *experiment.Spec.Safety.MaxTargets),
+				modePath.Child("count"), experiment.Spec.Mode.Count,
+				"must be at least 1",
+			))
+		}
+		// Validate mode.count does not exceed safety.maxTargets.
+		if experiment.Spec.Safety != nil && experiment.Spec.Safety.MaxTargets != nil {
+			if experiment.Spec.Mode.Count > *experiment.Spec.Safety.MaxTargets {
+				allErrs = append(allErrs, field.Invalid(
+					modePath.Child("count"), experiment.Spec.Mode.Count,
+					fmt.Sprintf("must not exceed safety.maxTargets (%d)", *experiment.Spec.Safety.MaxTargets),
+				))
+			}
+		}
+	}
+
+	// Validate percent when set (marker enforces 1-100, but belt-and-suspenders).
+	if hasPercent {
+		if *experiment.Spec.Mode.Percent < 1 {
+			allErrs = append(allErrs, field.Invalid(
+				modePath.Child("percent"), *experiment.Spec.Mode.Percent,
+				"must be at least 1 (0% is not allowed)",
 			))
 		}
 	}
@@ -119,6 +146,20 @@ func validateExperiment(experiment *chaosv1alpha1.Experiment) error {
 					approvalPath.Child("webhook"), experiment.Spec.Approval.Webhook,
 					"webhook is only valid when approval.required is true",
 				))
+			}
+		}
+	}
+
+	// Reject experiments that target a protected namespace.
+	if experiment.Spec.Selector.Namespace != "" {
+		for _, protected := range v.ProtectedNamespaces {
+			if experiment.Spec.Selector.Namespace == protected {
+				allErrs = append(allErrs, field.Invalid(
+					specPath.Child("selector", "namespace"),
+					experiment.Spec.Selector.Namespace,
+					fmt.Sprintf("namespace %q is protected and cannot be targeted by chaos experiments", protected),
+				))
+				break
 			}
 		}
 	}

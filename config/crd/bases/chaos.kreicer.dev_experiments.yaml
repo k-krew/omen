@@ -119,7 +119,16 @@ spec:
                 description: mode defines the target selection strategy.
                 properties:
                   count:
-                    description: count is the number of targets to select.
+                    description: count is the fixed number of targets to select. Mutually
+                      exclusive with percent.
+                    minimum: 1
+                    type: integer
+                  percent:
+                    description: |-
+                      percent is the percentage of matching pods to select (1-100).
+                      Mutually exclusive with count. The calculated value is always rounded up and
+                      is guaranteed to be at least 1 pod even if the percentage yields a fraction.
+                    maximum: 100
                     minimum: 1
                     type: integer
                   type:
@@ -129,7 +138,6 @@ spec:
                     - random
                     type: string
                 required:
-                - count
                 - type
                 type: object
               paused:

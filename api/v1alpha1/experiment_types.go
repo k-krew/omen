@@ -90,9 +90,18 @@ type Mode struct {
 	// +kubebuilder:default=random
 	Type ModeType `json:"type"`
 
-	// count is the number of targets to select.
+	// count is the fixed number of targets to select. Mutually exclusive with percent.
 	// +kubebuilder:validation:Minimum=1
-	Count int `json:"count"`
+	// +optional
+	Count int `json:"count,omitempty"`
+
+	// percent is the percentage of matching pods to select (1-100).
+	// Mutually exclusive with count. The calculated value is always rounded up and
+	// is guaranteed to be at least 1 pod even if the percentage yields a fraction.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	Percent *int `json:"percent,omitempty"`
 }
 
 // Action defines what chaos operation to perform.
