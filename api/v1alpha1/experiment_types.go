@@ -20,6 +20,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	// IgnoreAnnotation is the pod annotation that opts a pod out of target selection.
+	// Set to "true" on any pod to exclude it from all chaos experiments.
+	IgnoreAnnotation = "chaos.kreicer.dev/ignore"
+)
+
 // RunPolicyType defines how often an Experiment executes.
 // +kubebuilder:validation:Enum=Once;Repeat
 type RunPolicyType string

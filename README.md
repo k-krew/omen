@@ -75,6 +75,24 @@ Protection is enforced in two places:
 - **Validating webhook** — rejects `Experiment` objects whose `spec.selector.namespace` is in the protected list at admission time.
 - **Controller** — filters out any pods in protected namespaces during target selection, even for cluster-scoped selectors.
 
+## Safety: Pod-level Opt-out
+
+Individual pods can be excluded from all chaos experiments by adding the annotation `chaos.kreicer.dev/ignore: "true"`. This is useful for pods running critical in-flight work (e.g., database migrations, stateful leaders) that must not be interrupted.
+
+```bash
+kubectl annotate pod <pod-name> chaos.kreicer.dev/ignore=true
+```
+
+Or in the pod template:
+
+```yaml
+metadata:
+  annotations:
+    chaos.kreicer.dev/ignore: "true"
+```
+
+The annotated pod is removed from the eligible list before selection. If all matching pods carry the annotation, the run transitions to `Skipped` automatically.
+
 ## Run locally (against Kind or Minikube)
 
 ### Prerequisites
@@ -202,6 +220,8 @@ kubectl describe experimentrun <run-name>
 ```
 
 Events use `Normal` type for successful transitions (`PreviewGenerated`, `Approved`, `Running`, `Completed`) and `Warning` for failure states (`Failed`, `Expired`).
+
+The `TOTAL` column in `kubectl get expruns` is populated as soon as targets are selected during the `PreviewGenerated` phase, so you can see how many pods will be affected before the run executes.
 
 ## Safe Deletion
 

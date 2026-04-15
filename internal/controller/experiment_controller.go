@@ -274,6 +274,7 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 		run.Status.Phase = chaosv1alpha1.PhasePreviewGenerated
 		run.Status.PreviewTargets = targets
 		run.Status.ScheduledAt = &scheduledAt
+		run.Status.Summary = &chaosv1alpha1.RunSummary{Total: len(targets)}
 		if err := r.Status().Update(ctx, run); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -425,8 +426,16 @@ func (r *ExperimentReconciler) selectTargets(ctx context.Context, experiment *ch
 		if pod.Status.Phase != corev1.PodRunning {
 			continue
 		}
+		// Skip pods already marked for deletion (terminating).
+		if !pod.DeletionTimestamp.IsZero() {
+			continue
+		}
 		// Self-exclusion: skip pods belonging to the Omen operator itself.
 		if pod.Labels[omenAppLabel] == omenAppName {
+			continue
+		}
+		// Skip pods that have opted out of chaos via annotation.
+		if pod.Annotations[chaosv1alpha1.IgnoreAnnotation] == "true" {
 			continue
 		}
 		eligible = append(eligible, pod.Name)
