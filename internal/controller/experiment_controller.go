@@ -418,15 +418,17 @@ func (r *ExperimentReconciler) selectTargets(ctx context.Context, experiment *ch
 		denyNS[omenNS] = struct{}{}
 	}
 
+	// Build the eligible pool from all non-terminating pods that pass safety
+	// filters, regardless of phase. This ensures percentage-based experiments
+	// attack the correct fraction of the *total* fleet size even when some pods
+	// are still recovering from a previous run (Pending, CrashLoopBackOff, etc.).
 	var eligible []string
 	for _, pod := range podList.Items {
 		if _, denied := denyNS[pod.Namespace]; denied {
 			continue
 		}
-		if pod.Status.Phase != corev1.PodRunning {
-			continue
-		}
-		// Skip pods already marked for deletion (terminating).
+		// Skip pods already marked for deletion; they are on their way out and
+		// must not inflate the fleet size or be selected as targets.
 		if !pod.DeletionTimestamp.IsZero() {
 			continue
 		}
