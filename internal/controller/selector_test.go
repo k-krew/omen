@@ -85,8 +85,8 @@ var _ = Describe("Target Selection and Safety Filters", func() {
 		})
 	})
 
-	Context("non-running pods are excluded", func() {
-		It("skips Pending and Succeeded pods", func() {
+	Context("non-running pods are included", func() {
+		It("includes Pending and Succeeded pods in the eligible pool", func() {
 			labels := map[string]string{"role": "phase-test"}
 			running := makePod("phase-running", ns, labels, corev1.PodRunning)
 			pending := makePod("phase-pending", ns, labels, corev1.PodPending)
@@ -107,7 +107,9 @@ var _ = Describe("Target Selection and Safety Filters", func() {
 			r := newReconciler()
 			targets, err := r.selectTargets(ctx, exp)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(targets).To(ConsistOf("phase-running"))
+			// All non-terminating pods are eligible regardless of phase so that
+			// percentage calculations reflect the true fleet size.
+			Expect(targets).To(ConsistOf("phase-running", "phase-pending", "phase-succeeded"))
 		})
 	})
 
