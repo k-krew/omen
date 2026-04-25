@@ -48,3 +48,22 @@ jobs:
 
       - name: Run tests
         run: go test ./... -v -count=1 -race -timeout=120s
+
+  docker-build:
+    name: Docker Build (dry-run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build controller image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+
+      - name: Build agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agent/Dockerfile
+          push: false
