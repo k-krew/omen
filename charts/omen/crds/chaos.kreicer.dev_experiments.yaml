@@ -68,10 +68,38 @@ spec:
                       force performs the action immediately without a grace period when true.
                       Only applicable for delete_pod actions.
                     type: boolean
+                  networkFault:
+                    description: |-
+                      networkFault configures the network chaos parameters.
+                      Required when type is network_fault.
+                    properties:
+                      duration:
+                        description: |-
+                          duration is how long the fault is held before the controller
+                          automatically rolls it back.
+                        type: string
+                      jitter:
+                        description: |-
+                          jitter is the random variation applied on top of latency (e.g., "10ms").
+                          Requires latency to be set.
+                        type: string
+                      latency:
+                        description: latency is the fixed delay added to outgoing
+                          packets (e.g., "100ms").
+                        type: string
+                      packetLoss:
+                        description: |-
+                          packetLoss is the percentage of packets to drop (1-100).
+                          Set to 100 for a complete network blackhole.
+                        maximum: 100
+                        minimum: 1
+                        type: integer
+                    type: object
                   type:
                     description: type is the chaos action to execute.
                     enum:
                     - delete_pod
+                    - network_fault
                     type: string
                 required:
                 - type

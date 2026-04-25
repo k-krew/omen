@@ -1,0 +1,20 @@
+apiVersion: chaos.kreicer.dev/v1alpha1
+kind: Experiment
+metadata:
+  name: packet-loss-test
+  namespace: default
+spec:
+  runPolicy:
+    type: Once
+  selector:
+    namespace: default
+    labels:
+      app: my-app
+  mode:
+    type: random
+    count: 1
+  action:
+    type: network_fault
+    networkFault:
+      packetLoss: 30   # drop 30% of packets
+      duration: 3m

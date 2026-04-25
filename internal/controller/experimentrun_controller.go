@@ -30,9 +30,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	chaosv1alpha1 "github.com/k-krew/omen/api/v1alpha1"
@@ -48,16 +49,27 @@ const (
 	// missedExecutionGrace is the maximum time past ExecuteAt at which a run is
 	// still allowed to execute. Beyond this window the run is marked Expired.
 	missedExecutionGrace = 5 * time.Minute
+	// defaultNetworkFaultDuration is used when no duration is specified in NetworkFaultSpec.
+	defaultNetworkFaultDuration = 5 * time.Minute
+	// networkFaultPollInterval caps RequeueAfter during active network fault duration.
+	networkFaultPollInterval = 30 * time.Second
+	// networkFaultFinalizer is added to ExperimentRuns executing a network_fault so
+	// the controller can roll back the fault before the run object is deleted.
+	networkFaultFinalizer = "chaos.omen.com/network-fault"
 )
 
 // ExperimentRunReconciler reconciles a ExperimentRun object
 type ExperimentRunReconciler struct {
 	client.Client
 	Scheme              *runtime.Scheme
-	Recorder            record.EventRecorder
+	Recorder            events.EventRecorder
 	HTTPClient          *http.Client
 	WebhookTimeout      time.Duration
 	ControllerStartTime time.Time
+	// AgentPort is the port on which omen-agent sidecars listen.
+	AgentPort int
+	// SecretToken is sent as X-Omen-Token in every request to the agent.
+	SecretToken string
 }
 
 // +kubebuilder:rbac:groups=chaos.kreicer.dev,resources=experimentruns,verbs=get;list;watch;create;update;patch;delete
@@ -78,31 +90,38 @@ func (r *ExperimentRunReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	// Handle deletion: roll back any active network fault before allowing deletion.
+	if !run.DeletionTimestamp.IsZero() {
+		return r.handleRunDeletion(ctx, run)
+	}
+
 	// Terminal phases need no further action.
 	if isTerminalPhase(run.Status.Phase) {
 		return ctrl.Result{}, nil
 	}
 
-	// Guard against Running phase surviving a controller restart.
-	// A run whose StartedAt predates this process's start time was left in Running
-	// by a previous process and must be marked Failed (split-brain prevention).
-	// A run whose StartedAt is after ControllerStartTime is executing in this process;
-	// the concurrent reconcile triggered by the Running patch is safe to ignore.
-	if run.Status.Phase == chaosv1alpha1.PhaseRunning {
-		if run.Status.StartedAt != nil && run.Status.StartedAt.Time.Before(r.ControllerStartTime) {
-			log.Info("run found in Running phase from previous controller process, marking Failed")
-			return r.transitionPhase(ctx, run, chaosv1alpha1.PhaseFailed)
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// Fetch parent Experiment for approval config.
+	// Fetch parent Experiment — needed for both Running and later phases.
 	experiment := &chaosv1alpha1.Experiment{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Namespace: run.Namespace,
 		Name:      run.Spec.ExperimentName,
 	}, experiment); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Running phase handling depends on the action type.
+	if run.Status.Phase == chaosv1alpha1.PhaseRunning {
+		if experiment.Spec.Action.Type == chaosv1alpha1.ActionTypeNetworkFault {
+			return r.handleNetworkFaultRollback(ctx, run, experiment)
+		}
+		// delete_pod: guard against Running phase surviving a controller restart.
+		// A run whose StartedAt predates this process's start time was left in Running
+		// by a previous process and must be marked Failed (split-brain prevention).
+		if run.Status.StartedAt != nil && run.Status.StartedAt.Time.Before(r.ControllerStartTime) {
+			log.Info("run found in Running phase from previous controller process, marking Failed")
+			return r.transitionPhase(ctx, run, chaosv1alpha1.PhaseFailed)
+		}
+		return ctrl.Result{}, nil
 	}
 
 	switch run.Status.Phase {
@@ -140,10 +159,10 @@ func (r *ExperimentRunReconciler) handlePreviewGenerated(
 			// Return the error so controller-runtime retries with exponential backoff.
 			// The run only becomes Failed if it reaches the approval TTL while still
 			// in PendingApproval, not on a transient network error here.
-			r.Recorder.Eventf(run, corev1.EventTypeWarning, "WebhookFailed", "webhook delivery failed: %v", err)
+			r.Recorder.Eventf(run, nil, corev1.EventTypeWarning, "WebhookFailed", "WebhookFailed", "webhook delivery failed: %v", err)
 			return ctrl.Result{}, err
 		}
-		r.Recorder.Event(run, corev1.EventTypeNormal, "AwaitingApproval", "waiting for manual approval")
+		r.Recorder.Eventf(run, nil, corev1.EventTypeNormal, "AwaitingApproval", "AwaitingApproval", "waiting for manual approval")
 		return r.transitionPhase(ctx, run, chaosv1alpha1.PhasePendingApproval)
 	}
 	// No approval needed - go straight to Approved then execute.
@@ -183,12 +202,12 @@ func (r *ExperimentRunReconciler) handlePendingApproval(
 	now := time.Now()
 
 	if now.After(expiry) {
-		r.Recorder.Event(run, corev1.EventTypeWarning, "RunExpired", "approval TTL exceeded")
+		r.Recorder.Eventf(run, nil, corev1.EventTypeWarning, "RunExpired", "RunExpired", "approval TTL exceeded")
 		return r.transitionPhase(ctx, run, chaosv1alpha1.PhaseExpired)
 	}
 
 	if run.Spec.Approved {
-		r.Recorder.Event(run, corev1.EventTypeNormal, "Approved", "manual approval received")
+		r.Recorder.Eventf(run, nil, corev1.EventTypeNormal, "Approved", "Approved", "manual approval received")
 		return r.transitionPhase(ctx, run, chaosv1alpha1.PhaseApproved)
 	}
 
@@ -217,7 +236,7 @@ func (r *ExperimentRunReconciler) handleApproved(
 		// beyond that the run missed its execution slot and should not execute.
 		if missed := -remaining; missed > missedExecutionGrace {
 			log.Info("missed execution window, transitioning to Expired", "missedBy", missed.Round(time.Second))
-			r.Recorder.Eventf(run, corev1.EventTypeWarning, "MissedExecutionWindow",
+			r.Recorder.Eventf(run, nil, corev1.EventTypeWarning, "MissedExecutionWindow", "MissedExecutionWindow",
 				"execution time passed %s ago, skipping run", missed.Round(time.Second))
 			return r.transitionPhase(ctx, run, chaosv1alpha1.PhaseExpired)
 		}
@@ -227,7 +246,11 @@ func (r *ExperimentRunReconciler) handleApproved(
 		return ctrl.Result{}, err
 	}
 
-	r.Recorder.Event(run, corev1.EventTypeNormal, "ExecutionStarted", "beginning chaos execution")
+	r.Recorder.Eventf(run, nil, corev1.EventTypeNormal, "ExecutionStarted", "ExecutionStarted", "beginning chaos execution")
+
+	if experiment.Spec.Action.Type == chaosv1alpha1.ActionTypeNetworkFault {
+		return r.executeNetworkFault(ctx, run, experiment)
+	}
 
 	now := metav1.Now()
 	run.Status.StartedAt = &now
@@ -280,7 +303,7 @@ func (r *ExperimentRunReconciler) handleApproved(
 		return ctrl.Result{}, err
 	}
 
-	r.Recorder.Eventf(run, corev1.EventTypeNormal, "ExecutionFinished",
+	r.Recorder.Eventf(run, nil, corev1.EventTypeNormal, "ExecutionFinished", "ExecutionFinished",
 		"execution complete: total=%d success=%d failed=%d", len(results), successCount, failedCount)
 
 	return ctrl.Result{}, nil
@@ -354,6 +377,292 @@ func (r *ExperimentRunReconciler) executeDeletePod(ctx context.Context, namespac
 		Target: podName,
 		Status: chaosv1alpha1.TargetResultSuccess,
 	}
+}
+
+// executeNetworkFault sends HTTP fault requests to the omen-agent sidecar in each
+// target pod, records Injected status, adds the rollback finalizer, and requeues
+// after the configured fault duration.
+func (r *ExperimentRunReconciler) executeNetworkFault(
+	ctx context.Context,
+	run *chaosv1alpha1.ExperimentRun,
+	experiment *chaosv1alpha1.Experiment,
+) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	now := metav1.Now()
+	run.Status.StartedAt = &now
+
+	nf := experiment.Spec.Action.NetworkFault
+	targets := run.Status.PreviewTargets
+	results := make([]chaosv1alpha1.TargetResult, len(targets))
+
+	for i, target := range targets {
+		if experiment.Spec.DryRun {
+			results[i] = chaosv1alpha1.TargetResult{
+				Target:            target,
+				Status:            chaosv1alpha1.TargetResultSuccess,
+				NetworkFaultPhase: chaosv1alpha1.NetworkFaultInjected,
+			}
+			log.Info("dryRun=true, skipping actual fault injection", "pod", target)
+			continue
+		}
+
+		pod := &corev1.Pod{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: target}, pod); err != nil {
+			results[i] = chaosv1alpha1.TargetResult{
+				Target:            target,
+				Status:            chaosv1alpha1.TargetResultFailed,
+				Reason:            chaosv1alpha1.ReasonNotFound,
+				NetworkFaultPhase: chaosv1alpha1.NetworkFaultFailed,
+			}
+			continue
+		}
+
+		if err := r.sendFaultRequest(ctx, pod, nf); err != nil {
+			log.Error(err, "Failed to inject network fault via agent", "pod", target)
+			results[i] = chaosv1alpha1.TargetResult{
+				Target:            target,
+				Status:            chaosv1alpha1.TargetResultFailed,
+				Reason:            chaosv1alpha1.ReasonUnknown,
+				NetworkFaultPhase: chaosv1alpha1.NetworkFaultFailed,
+			}
+			continue
+		}
+
+		results[i] = chaosv1alpha1.TargetResult{
+			Target:            target,
+			Status:            chaosv1alpha1.TargetResultSuccess,
+			NetworkFaultPhase: chaosv1alpha1.NetworkFaultInjected,
+		}
+		log.Info("Network fault injected", "pod", target)
+	}
+
+	run.Status.Results = results
+	run.Status.Summary = &chaosv1alpha1.RunSummary{Total: len(results)}
+
+	// Add the finalizer so we can roll back when the run is deleted.
+	if !controllerutil.ContainsFinalizer(run, networkFaultFinalizer) {
+		patch := client.MergeFrom(run.DeepCopy())
+		controllerutil.AddFinalizer(run, networkFaultFinalizer)
+		if err := r.Patch(ctx, run, patch); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	if err := r.Status().Update(ctx, run); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	r.Recorder.Eventf(run, nil, corev1.EventTypeNormal, "FaultInjected", "FaultInjected",
+		"network fault injected into %d target(s)", len(targets))
+
+	duration := defaultNetworkFaultDuration
+	if nf != nil && nf.Duration != nil {
+		duration = nf.Duration.Duration
+	}
+	return ctrl.Result{RequeueAfter: duration}, nil
+}
+
+// handleNetworkFaultRollback is called on every reconcile while a network_fault run is
+// in the Running phase. It waits for the fault duration to elapse, then sends rollback
+// HTTP requests to each agent and transitions the run to Completed or Failed.
+func (r *ExperimentRunReconciler) handleNetworkFaultRollback(
+	ctx context.Context,
+	run *chaosv1alpha1.ExperimentRun,
+	experiment *chaosv1alpha1.Experiment,
+) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if run.Status.StartedAt == nil {
+		return r.transitionPhase(ctx, run, chaosv1alpha1.PhaseFailed)
+	}
+
+	nf := experiment.Spec.Action.NetworkFault
+	duration := defaultNetworkFaultDuration
+	if nf != nil && nf.Duration != nil {
+		duration = nf.Duration.Duration
+	}
+
+	elapsed := time.Since(run.Status.StartedAt.Time)
+	if elapsed < duration {
+		remaining := duration - elapsed
+		return ctrl.Result{RequeueAfter: min(remaining, networkFaultPollInterval)}, nil
+	}
+
+	// Duration elapsed — roll back all injected targets.
+	results := run.Status.Results
+	successCount := 0
+	failedCount := 0
+
+	for i, res := range results {
+		if res.NetworkFaultPhase == chaosv1alpha1.NetworkFaultCleanedUp {
+			successCount++
+			continue
+		}
+		if res.NetworkFaultPhase == chaosv1alpha1.NetworkFaultFailed {
+			failedCount++
+			continue
+		}
+
+		if experiment.Spec.DryRun {
+			results[i].NetworkFaultPhase = chaosv1alpha1.NetworkFaultCleanedUp
+			successCount++
+			continue
+		}
+
+		pod := &corev1.Pod{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: res.Target}, pod); err != nil {
+			// Pod is gone — network namespace is destroyed, fault is cleared.
+			results[i].NetworkFaultPhase = chaosv1alpha1.NetworkFaultCleanedUp
+			successCount++
+			log.Info("Target pod gone during rollback, treating as cleaned up", "pod", res.Target)
+			continue
+		}
+
+		if err := r.sendRollbackRequest(ctx, pod); err != nil {
+			log.Error(err, "Failed to roll back network fault via agent", "pod", res.Target)
+			results[i].Status = chaosv1alpha1.TargetResultFailed
+			results[i].NetworkFaultPhase = chaosv1alpha1.NetworkFaultFailed
+			failedCount++
+			continue
+		}
+
+		results[i].NetworkFaultPhase = chaosv1alpha1.NetworkFaultCleanedUp
+		successCount++
+		log.Info("Network fault rolled back", "pod", res.Target)
+	}
+
+	completedAt := metav1.Now()
+	run.Status.Results = results
+	run.Status.Summary = &chaosv1alpha1.RunSummary{
+		Total:   len(results),
+		Success: successCount,
+		Failed:  failedCount,
+	}
+	run.Status.CompletedAt = &completedAt
+
+	finalPhase := chaosv1alpha1.PhaseCompleted
+	if failedCount > 0 && successCount == 0 {
+		finalPhase = chaosv1alpha1.PhaseFailed
+	}
+	run.Status.Phase = finalPhase
+
+	patch := client.MergeFrom(run.DeepCopy())
+	controllerutil.RemoveFinalizer(run, networkFaultFinalizer)
+	if err := r.Patch(ctx, run, patch); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.Status().Update(ctx, run); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	eventType := corev1.EventTypeNormal
+	if finalPhase == chaosv1alpha1.PhaseFailed {
+		eventType = corev1.EventTypeWarning
+	}
+	r.Recorder.Eventf(run, nil, eventType, "FaultRolledBack", "FaultRolledBack",
+		"network fault rolled back: total=%d success=%d failed=%d", len(results), successCount, failedCount)
+	r.Recorder.Eventf(run, nil, eventType, "PhaseTransition", "PhaseTransition", "phase changed to %s", finalPhase)
+
+	return ctrl.Result{}, nil
+}
+
+// handleRunDeletion rolls back active network faults before the run is deleted.
+func (r *ExperimentRunReconciler) handleRunDeletion(ctx context.Context, run *chaosv1alpha1.ExperimentRun) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if !controllerutil.ContainsFinalizer(run, networkFaultFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	for _, res := range run.Status.Results {
+		if res.NetworkFaultPhase != chaosv1alpha1.NetworkFaultInjected {
+			continue
+		}
+		pod := &corev1.Pod{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: res.Target}, pod); err != nil {
+			continue
+		}
+		if err := r.sendRollbackRequest(ctx, pod); err != nil {
+			log.Error(err, "Failed to roll back fault during ExperimentRun deletion", "pod", res.Target)
+		}
+	}
+
+	patch := client.MergeFrom(run.DeepCopy())
+	controllerutil.RemoveFinalizer(run, networkFaultFinalizer)
+	return ctrl.Result{}, r.Patch(ctx, run, patch)
+}
+
+// agentURL returns the base URL for the omen-agent inside a pod.
+func (r *ExperimentRunReconciler) agentURL(pod *corev1.Pod) string {
+	port := r.AgentPort
+	if port == 0 {
+		port = 9999
+	}
+	return fmt.Sprintf("http://%s:%d", pod.Status.PodIP, port)
+}
+
+// sendFaultRequest posts a fault request to the agent inside the given pod.
+func (r *ExperimentRunReconciler) sendFaultRequest(ctx context.Context, pod *corev1.Pod, nf *chaosv1alpha1.NetworkFaultSpec) error {
+	body := map[string]any{"interface": "eth0"}
+	if nf != nil {
+		if nf.Latency != nil {
+			body["latencyMs"] = nf.Latency.Milliseconds()
+		}
+		if nf.Jitter != nil {
+			body["jitterMs"] = nf.Jitter.Milliseconds()
+		}
+		if nf.PacketLoss != nil {
+			body["packetLoss"] = *nf.PacketLoss
+		}
+	}
+	return r.agentRequest(ctx, http.MethodPost, r.agentURL(pod)+"/network-fault", body)
+}
+
+// sendRollbackRequest sends a DELETE to the agent to remove the active qdisc.
+func (r *ExperimentRunReconciler) sendRollbackRequest(ctx context.Context, pod *corev1.Pod) error {
+	return r.agentRequest(ctx, http.MethodDelete, r.agentURL(pod)+"/network-fault?interface=eth0", nil)
+}
+
+// agentRequest is a thin helper that marshals a body and performs an HTTP request
+// to the omen-agent, setting the auth token header.
+func (r *ExperimentRunReconciler) agentRequest(ctx context.Context, method, url string, body map[string]any) error {
+	var reqBody *bytes.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reqBody = bytes.NewReader(data)
+	} else {
+		reqBody = bytes.NewReader(nil)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if r.SecretToken != "" {
+		req.Header.Set("X-Omen-Token", r.SecretToken)
+	}
+
+	httpClient := r.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Second}
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("agent returned non-2xx status: %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // sendWebhook posts the approval notification payload.
@@ -431,7 +740,7 @@ func (r *ExperimentRunReconciler) transitionPhase(
 	if phase == chaosv1alpha1.PhaseFailed || phase == chaosv1alpha1.PhaseExpired {
 		eventType = corev1.EventTypeWarning
 	}
-	r.Recorder.Eventf(run, eventType, "PhaseTransition", "phase changed to %s", phase)
+	r.Recorder.Eventf(run, nil, eventType, "PhaseTransition", "PhaseTransition", "phase changed to %s", phase)
 
 	return ctrl.Result{}, nil
 }
@@ -439,7 +748,6 @@ func (r *ExperimentRunReconciler) transitionPhase(
 // SetupWithManager sets up the controller with the Manager.
 func (r *ExperimentRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.ControllerStartTime = time.Now()
-	r.Recorder = mgr.GetEventRecorderFor("experimentrun-controller") //nolint:staticcheck
 	if r.HTTPClient == nil {
 		timeout := r.WebhookTimeout
 		if timeout == 0 {

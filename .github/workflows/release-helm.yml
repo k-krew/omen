@@ -33,6 +33,7 @@ jobs:
       - name: Update default image tag in values.yaml
         run: |
           sed -i "s/^  tag:.*/  tag: \"${{ env.VERSION }}\"/" charts/omen/values.yaml
+          sed -i "s|agentImage: .*|agentImage: \"ghcr.io/k-krew/omen-agent:${{ env.VERSION }}\"|" charts/omen/values.yaml
 
       - name: Log in to GHCR
         run: |

@@ -19,31 +19,49 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 
+	chaosv1alpha1 "github.com/k-krew/omen/api/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
-
-	chaosv1alpha1 "github.com/k-krew/omen/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 var _ = Describe("Target Selection and Safety Filters", func() {
 	const ns = "selector-test-ns"
+	// unlabeledNS is a namespace that deliberately lacks the chaos enabled label.
+	const unlabeledNS = "selector-unlabeled-ns"
 
 	ctx := context.Background()
 
-	BeforeEach(func() {
-		namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}
+	// ensureNamespace creates the namespace if it does not exist and then patches
+	// it to ensure it has the given labels.
+	ensureNamespace := func(name string, labels map[string]string) {
+		namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
 		_ = k8sClient.Create(ctx, namespace)
+		// Patch the namespace labels regardless of whether Create succeeded.
+		fetched := &corev1.Namespace{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, fetched)).To(Succeed())
+		patch := fetched.DeepCopy()
+		if patch.Labels == nil {
+			patch.Labels = make(map[string]string)
+		}
+		maps.Copy(patch.Labels, labels)
+		Expect(k8sClient.Update(ctx, patch)).To(Succeed())
+	}
+
+	BeforeEach(func() {
+		ensureNamespace(ns, map[string]string{chaosv1alpha1.EnabledLabel: chaosv1alpha1.EnabledLabelValue})
+		ensureNamespace(unlabeledNS, map[string]string{})
 	})
 
 	newReconciler := func() *ExperimentReconciler {
 		return &ExperimentReconciler{
 			Client:   k8sClient,
 			Scheme:   k8sClient.Scheme(),
-			Recorder: record.NewFakeRecorder(10),
+			Recorder: &fakeEventRecorder{},
 		}
 	}
 
@@ -57,6 +75,65 @@ var _ = Describe("Target Selection and Safety Filters", func() {
 		ExpectWithOffset(1, k8sClient.Status().Update(ctx, pod)).To(Succeed())
 		return pod
 	}
+
+	makePodWithAgent := func(name, namespace string, labels map[string]string, phase corev1.PodPhase) *corev1.Pod {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{Name: "c", Image: "nginx"},
+					{Name: "omen-agent", Image: "ghcr.io/k-krew/omen-agent:latest"},
+				},
+			},
+		}
+		ExpectWithOffset(1, k8sClient.Create(ctx, pod)).To(Succeed())
+		pod.Status.Phase = phase
+		ExpectWithOffset(1, k8sClient.Status().Update(ctx, pod)).To(Succeed())
+		return pod
+	}
+
+	Context("namespace opt-in label", func() {
+		It("selects pods only from namespaces labeled chaos.kreicer.dev/enabled=true", func() {
+			labels := map[string]string{"role": "ns-gate-test"}
+			enabled := makePod("ns-gate-enabled", ns, labels, corev1.PodRunning)
+			notEnabled := makePod("ns-gate-disabled", unlabeledNS, labels, corev1.PodRunning)
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, enabled)
+				_ = k8sClient.Delete(ctx, notEnabled)
+			})
+
+			// Selector with no namespace restriction so both namespaces are queried.
+			exp := &chaosv1alpha1.Experiment{
+				Spec: chaosv1alpha1.ExperimentSpec{
+					Selector: chaosv1alpha1.TargetSelector{Labels: labels},
+					Mode:     chaosv1alpha1.Mode{Type: chaosv1alpha1.ModeTypeRandom, Count: 10},
+				},
+			}
+
+			r := newReconciler()
+			targets, err := r.selectTargets(ctx, exp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(targets).To(ConsistOf("ns-gate-enabled"))
+		})
+
+		It("returns nil when the target namespace has no enabled label", func() {
+			labels := map[string]string{"role": "unlabeled-ns-test"}
+			p := makePod("unlabeled-pod", unlabeledNS, labels, corev1.PodRunning)
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, p) })
+
+			exp := &chaosv1alpha1.Experiment{
+				Spec: chaosv1alpha1.ExperimentSpec{
+					Selector: chaosv1alpha1.TargetSelector{Namespace: unlabeledNS, Labels: labels},
+					Mode:     chaosv1alpha1.Mode{Type: chaosv1alpha1.ModeTypeRandom, Count: 1},
+				},
+			}
+
+			r := newReconciler()
+			targets, err := r.selectTargets(ctx, exp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(targets).To(BeNil())
+		})
+	})
 
 	Context("label selector", func() {
 		It("only returns pods matching the label selector", func() {
@@ -107,9 +184,67 @@ var _ = Describe("Target Selection and Safety Filters", func() {
 			r := newReconciler()
 			targets, err := r.selectTargets(ctx, exp)
 			Expect(err).NotTo(HaveOccurred())
-			// All non-terminating pods are eligible regardless of phase so that
-			// percentage calculations reflect the true fleet size.
 			Expect(targets).To(ConsistOf("phase-running", "phase-pending", "phase-succeeded"))
+		})
+	})
+
+	Context("network_fault pool filtering", func() {
+		It("only selects pods with omen-agent container for network_fault actions", func() {
+			labels := map[string]string{"role": "nf-pool-test"}
+			withAgent := makePodWithAgent("nf-with-agent", ns, labels, corev1.PodRunning)
+			withoutAgent := makePod("nf-without-agent", ns, labels, corev1.PodRunning)
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, withAgent)
+				_ = k8sClient.Delete(ctx, withoutAgent)
+			})
+
+			exp := &chaosv1alpha1.Experiment{
+				Spec: chaosv1alpha1.ExperimentSpec{
+					Selector: chaosv1alpha1.TargetSelector{Namespace: ns, Labels: labels},
+					Mode:     chaosv1alpha1.Mode{Type: chaosv1alpha1.ModeTypeRandom, Count: 10},
+					Action:   chaosv1alpha1.Action{Type: chaosv1alpha1.ActionTypeNetworkFault},
+				},
+			}
+
+			r := newReconciler()
+			targets, err := r.selectTargets(ctx, exp)
+			Expect(err).NotTo(HaveOccurred())
+			// Pod without omen-agent is in base (for percentage) but not in pool.
+			Expect(targets).To(ConsistOf("nf-with-agent"))
+		})
+
+		It("uses full fleet size (base) for percentage, but selects only from pool", func() {
+			labels := map[string]string{"role": "nf-pct-test"}
+			// 4 pods total: 2 with agent, 2 without. 50% of 4 = 2 targets.
+			// Both targets come from the agent pool (2 pods available).
+			for i := range 2 {
+				p := makePodWithAgent(fmt.Sprintf("nf-agent-%d", i), ns, labels, corev1.PodRunning)
+				pod := p
+				DeferCleanup(func() { _ = k8sClient.Delete(ctx, pod) })
+			}
+			for i := range 2 {
+				p := makePod(fmt.Sprintf("nf-noagent-%d", i), ns, labels, corev1.PodRunning)
+				pod := p
+				DeferCleanup(func() { _ = k8sClient.Delete(ctx, pod) })
+			}
+
+			pct := 50
+			exp := &chaosv1alpha1.Experiment{
+				Spec: chaosv1alpha1.ExperimentSpec{
+					Selector: chaosv1alpha1.TargetSelector{Namespace: ns, Labels: labels},
+					Mode:     chaosv1alpha1.Mode{Type: chaosv1alpha1.ModeTypeRandom, Percent: &pct},
+					Action:   chaosv1alpha1.Action{Type: chaosv1alpha1.ActionTypeNetworkFault},
+				},
+			}
+
+			r := newReconciler()
+			targets, err := r.selectTargets(ctx, exp)
+			Expect(err).NotTo(HaveOccurred())
+			// 50% of 4 (base) = 2 targets, selected from the agent pool (2 pods).
+			Expect(targets).To(HaveLen(2))
+			for _, t := range targets {
+				Expect(t).To(HavePrefix("nf-agent-"))
+			}
 		})
 	})
 

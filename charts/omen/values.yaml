@@ -16,12 +16,10 @@ manager:
   leaderElect: true
   metricsBindAddress: "0"
   healthProbeBindAddress: ":8081"
-  # Namespaces that are protected from chaos experiments.
-  # The controller and validating webhook both enforce this list.
-  protectedNamespaces:
-    - kube-system
-    - omen-system
-    - kube-public
+  # Container image for the omen-agent sidecar injected into target pods.
+  agentImage: "ghcr.io/k-krew/omen-agent:latest"
+  # Port the omen-agent listens on. Change if it conflicts with your application.
+  agentPort: 9999
 
 serviceAccount:
   create: true

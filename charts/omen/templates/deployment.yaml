@@ -40,8 +40,11 @@ spec:
             - --webhook-cert-name={{ .Values.webhook.tlsCertName }}
             - --webhook-cert-key={{ .Values.webhook.tlsCertKey }}
             {{- end }}
-            {{- if .Values.manager.protectedNamespaces }}
-            - --protected-namespaces={{ join "," .Values.manager.protectedNamespaces }}
+            {{- if .Values.manager.agentImage }}
+            - --agent-image={{ .Values.manager.agentImage }}
+            {{- end }}
+            {{- if .Values.manager.agentPort }}
+            - --agent-port={{ .Values.manager.agentPort }}
             {{- end }}
           ports:
             - name: webhook-server
@@ -55,6 +58,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: OMEN_SECRET_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "omen.fullname" . }}-secret
+                  key: token
           livenessProbe:
             httpGet:
               path: /healthz

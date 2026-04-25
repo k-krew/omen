@@ -31,7 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -50,9 +50,8 @@ const (
 // ExperimentReconciler reconciles a Experiment object
 type ExperimentReconciler struct {
 	client.Client
-	Scheme              *runtime.Scheme
-	Recorder            record.EventRecorder
-	ProtectedNamespaces []string
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=chaos.kreicer.dev,resources=experiments,verbs=get;list;watch;create;update;patch;delete
@@ -60,6 +59,7 @@ type ExperimentReconciler struct {
 // +kubebuilder:rbac:groups=chaos.kreicer.dev,resources=experiments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=chaos.kreicer.dev,resources=experimentruns,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *ExperimentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -253,7 +253,7 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 		if err := r.Status().Update(ctx, run); err != nil {
 			return ctrl.Result{}, err
 		}
-		r.Recorder.Event(experiment, corev1.EventTypeNormal, "RunSkipped", "No eligible targets found")
+		r.Recorder.Eventf(experiment, nil, corev1.EventTypeNormal, "RunSkipped", "RunSkipped", "No eligible targets found")
 		log.Info("no targets found, run marked as Skipped", "run", runName)
 	} else {
 		if err := r.Create(ctx, run); err != nil {
@@ -278,7 +278,7 @@ func (r *ExperimentReconciler) scheduleRun(ctx context.Context, experiment *chao
 		if err := r.Status().Update(ctx, run); err != nil {
 			return ctrl.Result{}, err
 		}
-		r.Recorder.Event(experiment, corev1.EventTypeNormal, "RunScheduled", fmt.Sprintf("ExperimentRun %s created with %d targets", runName, len(targets)))
+		r.Recorder.Eventf(experiment, nil, corev1.EventTypeNormal, "RunScheduled", "RunScheduled", "ExperimentRun %s created with %d targets", runName, len(targets))
 		log.Info("ExperimentRun created", "run", runName, "targets", targets)
 	}
 
@@ -404,31 +404,54 @@ func (r *ExperimentReconciler) selectTargets(ctx context.Context, experiment *ch
 	// Determine Omen's own namespace for self-exclusion.
 	omenNS := os.Getenv(omenNamespaceEnv)
 
-	// Build deny namespace set from safety spec, protected namespaces, and self-exclusion.
+	// Build deny namespace set from user-defined safety spec and self-exclusion.
 	denyNS := map[string]struct{}{}
 	if experiment.Spec.Safety != nil {
 		for _, ns := range experiment.Spec.Safety.DenyNamespaces {
 			denyNS[ns] = struct{}{}
 		}
 	}
-	for _, ns := range r.ProtectedNamespaces {
-		denyNS[ns] = struct{}{}
-	}
 	if omenNS != "" {
 		denyNS[omenNS] = struct{}{}
 	}
 
-	// Build the eligible pool from all non-terminating pods that pass safety
-	// filters, regardless of phase. This ensures percentage-based experiments
-	// attack the correct fraction of the *total* fleet size even when some pods
-	// are still recovering from a previous run (Pending, CrashLoopBackOff, etc.).
-	var eligible []string
+	// Cache namespace opt-in label lookups to avoid repeated API calls.
+	enabledNS := make(map[string]bool)
+	isEnabled := func(namespace string) bool {
+		if v, ok := enabledNS[namespace]; ok {
+			return v
+		}
+		ns := &corev1.Namespace{}
+		if err := r.Get(ctx, types.NamespacedName{Name: namespace}, ns); err != nil {
+			enabledNS[namespace] = false
+			return false
+		}
+		enabled := ns.Labels[chaosv1alpha1.EnabledLabel] == chaosv1alpha1.EnabledLabelValue
+		enabledNS[namespace] = enabled
+		return enabled
+	}
+
+	networkFault := experiment.Spec.Action.Type == chaosv1alpha1.ActionTypeNetworkFault
+
+	// Build two sets from the pod list:
+	//   base — all non-terminating pods in chaos-enabled namespaces that pass
+	//           safety filters, regardless of whether they carry omen-agent.
+	//           Used for percentage calculation so the fraction reflects the
+	//           true fleet size even if the agent isn't on every pod yet.
+	//   pool — pods available for actual target selection (action-dependent):
+	//           delete_pod: same as base.
+	//           network_fault: restricted to pods that carry the omen-agent
+	//           container (required to receive the HTTP fault request).
+	var base, pool []string
 	for _, pod := range podList.Items {
 		if _, denied := denyNS[pod.Namespace]; denied {
 			continue
 		}
-		// Skip pods already marked for deletion; they are on their way out and
-		// must not inflate the fleet size or be selected as targets.
+		// Only target pods in namespaces that have opted into chaos.
+		if !isEnabled(pod.Namespace) {
+			continue
+		}
+		// Skip pods already marked for deletion.
 		if !pod.DeletionTimestamp.IsZero() {
 			continue
 		}
@@ -440,18 +463,27 @@ func (r *ExperimentReconciler) selectTargets(ctx context.Context, experiment *ch
 		if pod.Annotations[chaosv1alpha1.IgnoreAnnotation] == "true" {
 			continue
 		}
-		eligible = append(eligible, pod.Name)
+		base = append(base, pod.Name)
+		if !networkFault || podHasAgent(pod) {
+			pool = append(pool, pod.Name)
+		}
 	}
 
-	if len(eligible) == 0 {
+	if len(pool) == 0 {
 		return nil, nil
 	}
 
+	// Use base size for percentage so the fraction reflects the full fleet,
+	// even if some pods are temporarily unavailable.
+	eligible := pool
+	baseSize := len(base)
+
 	// Determine count from either fixed count or percentage.
+	// Percentage is applied against baseSize (full fleet) so the fraction is
+	// consistent even when part of the fleet is temporarily unavailable.
 	var count int
 	if experiment.Spec.Mode.Percent != nil {
-		// Round up so that e.g. 10% of 2 pods = 1 pod (not 0).
-		count = max(int(math.Ceil(float64(len(eligible))*float64(*experiment.Spec.Mode.Percent)/100.0)), 1)
+		count = max(int(math.Ceil(float64(baseSize)*float64(*experiment.Spec.Mode.Percent)/100.0)), 1)
 	} else {
 		count = experiment.Spec.Mode.Count
 	}
@@ -479,6 +511,16 @@ func (r *ExperimentReconciler) selectTargets(ctx context.Context, experiment *ch
 	return selected, nil
 }
 
+// podHasAgent returns true if the pod spec contains a container named omen-agent.
+func podHasAgent(pod corev1.Pod) bool {
+	for _, c := range pod.Spec.Containers {
+		if c.Name == "omen-agent" {
+			return true
+		}
+	}
+	return false
+}
+
 func isTerminalPhase(phase chaosv1alpha1.ExperimentRunPhase) bool {
 	switch phase {
 	case chaosv1alpha1.PhaseCompleted,
@@ -492,7 +534,6 @@ func isTerminalPhase(phase chaosv1alpha1.ExperimentRunPhase) bool {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ExperimentReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorderFor("experiment-controller") //nolint:staticcheck
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&chaosv1alpha1.Experiment{}).
 		Owns(&chaosv1alpha1.ExperimentRun{}).

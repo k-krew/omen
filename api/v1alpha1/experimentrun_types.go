@@ -57,6 +57,16 @@ const (
 	ReasonUnknown           FailureReason = "Unknown"
 )
 
+// NetworkFaultPhase tracks the injection lifecycle for network_fault actions.
+// +kubebuilder:validation:Enum=Injected;CleanedUp;Failed
+type NetworkFaultPhase string
+
+const (
+	NetworkFaultInjected  NetworkFaultPhase = "Injected"
+	NetworkFaultCleanedUp NetworkFaultPhase = "CleanedUp"
+	NetworkFaultFailed    NetworkFaultPhase = "Failed"
+)
+
 // TargetResult records the outcome of the chaos action for one target pod.
 type TargetResult struct {
 	// target is the name of the pod that was acted on.
@@ -68,6 +78,10 @@ type TargetResult struct {
 	// reason is populated when status is Failed.
 	// +optional
 	Reason FailureReason `json:"reason,omitempty"`
+
+	// networkFaultPhase tracks the injection lifecycle for network_fault actions.
+	// +optional
+	NetworkFaultPhase NetworkFaultPhase `json:"networkFaultPhase,omitempty"`
 }
 
 // RunSummary aggregates the overall outcome of an ExperimentRun.

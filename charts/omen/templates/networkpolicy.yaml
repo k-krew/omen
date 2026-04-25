@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "omen.fullname" . }}-agent-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "omen.labels" . | nindent 4 }}
+spec:
+  # This policy is applied to omen-agent sidecars running in user namespaces.
+  # It restricts agent ingress so only the Omen controller can send fault requests.
+  # Users must copy or reference this policy in their target namespaces.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: omen-agent
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "omen.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.manager.agentPort | default 9999 }}

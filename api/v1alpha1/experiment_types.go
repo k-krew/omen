@@ -21,6 +21,12 @@ import (
 )
 
 const (
+	// EnabledLabel is the namespace label that opts a namespace into chaos injection.
+	// Only pods in namespaces carrying this label are eligible as chaos targets.
+	EnabledLabel = "chaos.kreicer.dev/enabled"
+	// EnabledLabelValue is the value EnabledLabel must carry for a namespace to be opted in.
+	EnabledLabelValue = "true"
+
 	// IgnoreAnnotation is the pod annotation that opts a pod out of target selection.
 	// Set to "true" on any pod to exclude it from all chaos experiments.
 	IgnoreAnnotation = "chaos.kreicer.dev/ignore"
@@ -52,12 +58,38 @@ const (
 )
 
 // ActionType defines the chaos action to perform.
-// +kubebuilder:validation:Enum=delete_pod
+// +kubebuilder:validation:Enum=delete_pod;network_fault
 type ActionType string
 
 const (
-	ActionTypeDeletePod ActionType = "delete_pod"
+	ActionTypeDeletePod    ActionType = "delete_pod"
+	ActionTypeNetworkFault ActionType = "network_fault"
 )
+
+// NetworkFaultSpec defines the parameters for a network chaos action.
+// At least one of Latency or PacketLoss must be set.
+type NetworkFaultSpec struct {
+	// latency is the fixed delay added to outgoing packets (e.g., "100ms").
+	// +optional
+	Latency *metav1.Duration `json:"latency,omitempty"`
+
+	// jitter is the random variation applied on top of latency (e.g., "10ms").
+	// Requires latency to be set.
+	// +optional
+	Jitter *metav1.Duration `json:"jitter,omitempty"`
+
+	// packetLoss is the percentage of packets to drop (1-100).
+	// Set to 100 for a complete network blackhole.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	PacketLoss *int `json:"packetLoss,omitempty"`
+
+	// duration is how long the fault is held before the controller
+	// automatically rolls it back.
+	// +optional
+	Duration *metav1.Duration `json:"duration,omitempty"`
+}
 
 // RunPolicy defines the scheduling policy for an Experiment.
 type RunPolicy struct {
@@ -120,6 +152,11 @@ type Action struct {
 	// +kubebuilder:default=false
 	// +optional
 	Force bool `json:"force,omitempty"`
+
+	// networkFault configures the network chaos parameters.
+	// Required when type is network_fault.
+	// +optional
+	NetworkFault *NetworkFaultSpec `json:"networkFault,omitempty"`
 }
 
 // WebhookConfig holds the approval notification endpoint.

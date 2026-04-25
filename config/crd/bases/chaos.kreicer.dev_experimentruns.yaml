@@ -117,6 +117,14 @@ spec:
                   description: TargetResult records the outcome of the chaos action
                     for one target pod.
                   properties:
+                    networkFaultPhase:
+                      description: networkFaultPhase tracks the injection lifecycle
+                        for network_fault actions.
+                      enum:
+                      - Injected
+                      - CleanedUp
+                      - Failed
+                      type: string
                     reason:
                       description: reason is populated when status is Failed.
                       enum:

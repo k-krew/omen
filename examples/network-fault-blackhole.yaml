@@ -1,0 +1,23 @@
+apiVersion: chaos.kreicer.dev/v1alpha1
+kind: Experiment
+metadata:
+  name: network-blackhole
+  namespace: default
+spec:
+  runPolicy:
+    type: Once
+  selector:
+    namespace: default
+    labels:
+      app: my-app
+  mode:
+    type: random
+    count: 1
+  action:
+    type: network_fault
+    networkFault:
+      packetLoss: 100   # complete network blackhole
+      duration: 2m
+  approval:
+    required: true
+    ttl: 15m

@@ -1,0 +1,19 @@
+apiVersion: chaos.kreicer.dev/v1alpha1
+kind: Experiment
+metadata:
+  name: kill-one-pod
+  namespace: default
+spec:
+  runPolicy:
+    type: Once
+  selector:
+    namespace: default
+    labels:
+      app: my-app
+  mode:
+    type: random
+    count: 1
+  action:
+    type: delete_pod
+  safety:
+    maxTargets: 1

@@ -19,8 +19,9 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
+	"net"
 	"os"
-	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -55,7 +56,6 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
-// nolint:gocyclo
 func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
@@ -65,8 +65,10 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var webhookTimeout time.Duration
-	var protectedNamespacesFlag string
+	var agentImage string
+	var agentPort int
 	var tlsOpts []func(*tls.Config)
+
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -86,8 +88,12 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.DurationVar(&webhookTimeout, "webhook-timeout", 10*time.Second,
 		"Timeout for outgoing approval webhook HTTP requests.")
-	flag.StringVar(&protectedNamespacesFlag, "protected-namespaces", "kube-system,omen-system,kube-public",
-		"Comma-separated list of namespaces that are protected from chaos experiments.")
+	// Default value for the agent image; overridden at release time by the Helm chart's values.yaml.
+	flag.StringVar(&agentImage, "agent-image", "ghcr.io/k-krew/omen-agent:latest",
+		"Container image for the omen-agent sidecar injected into target pods.")
+	flag.IntVar(&agentPort, "agent-port", 9999,
+		"Port the omen-agent sidecar listens on. Must not conflict with user application ports.")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -111,57 +117,10 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	// Initial webhook TLS options
-	webhookTLSOpts := tlsOpts
-	webhookServerOptions := webhook.Options{
-		TLSOpts: webhookTLSOpts,
-	}
-
-	if len(webhookCertPath) > 0 {
-		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
-
-		webhookServerOptions.CertDir = webhookCertPath
-		webhookServerOptions.CertName = webhookCertName
-		webhookServerOptions.KeyName = webhookCertKey
-	}
-
-	webhookServer := webhook.NewServer(webhookServerOptions)
-
-	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
-	// More info:
-	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/metrics/server
-	// - https://book.kubebuilder.io/reference/metrics.html
-	metricsServerOptions := metricsserver.Options{
-		BindAddress:   metricsAddr,
-		SecureServing: secureMetrics,
-		TLSOpts:       tlsOpts,
-	}
-
-	if secureMetrics {
-		// FilterProvider is used to protect the metrics endpoint with authn/authz.
-		// These configurations ensure that only authorized users and service accounts
-		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
-		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/metrics/filters#WithAuthenticationAndAuthorization
-		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
-	}
-
-	// If the certificate is not specified, controller-runtime will automatically
-	// generate self-signed certificates for the metrics server. While convenient for development and testing,
-	// this setup is not recommended for production.
-	//
-	// TODO(user): If you enable certManager, uncomment the following lines:
-	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
-	// managed by cert-manager for the metrics server.
-	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
-	if len(metricsCertPath) > 0 {
-		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
-
-		metricsServerOptions.CertDir = metricsCertPath
-		metricsServerOptions.CertName = metricsCertName
-		metricsServerOptions.KeyName = metricsCertKey
-	}
+	webhookServer := buildWebhookServer(webhookCertPath, webhookCertName, webhookCertKey, tlsOpts)
+	metricsServerOptions := buildMetricsOptions(
+		metricsAddr, secureMetrics, metricsCertPath, metricsCertName, metricsCertKey, tlsOpts,
+	)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
@@ -170,44 +129,28 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "7085bdfb.kreicer.dev",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "Failed to start manager")
 		os.Exit(1)
 	}
 
-	protectedNamespaces := splitTrimmed(protectedNamespacesFlag)
-	setupLog.Info("Protected namespaces configured", "namespaces", protectedNamespaces)
+	// Read the shared secret from the environment. The secret is generated by
+	// Helm and mounted into the controller pod; the mutating webhook injects it
+	// into agent sidecars so they can authenticate controller requests.
+	secretToken := os.Getenv("OMEN_SECRET_TOKEN")
 
-	if err := (&controller.ExperimentReconciler{
-		Client:              mgr.GetClient(),
-		Scheme:              mgr.GetScheme(),
-		ProtectedNamespaces: protectedNamespaces,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "Experiment")
-		os.Exit(1)
+	// Pre-flight check: verify the agent image registry is reachable before
+	// enabling sidecar injection. If the registry is unreachable (e.g. air-gapped
+	// cluster) we disable injection so user pods are not bricked with ImagePullBackOff.
+	injectionEnabled := checkRegistryReachable(agentImage)
+	if !injectionEnabled {
+		setupLog.Info("WARNING: agent image registry is not reachable — sidecar injection will be disabled",
+			"image", agentImage)
 	}
-	if err := (&controller.ExperimentRunReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		WebhookTimeout: webhookTimeout,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "ExperimentRun")
-		os.Exit(1)
-	}
-	if err := omenwebhook.SetupExperimentWebhookWithManager(mgr, protectedNamespaces); err != nil {
-		setupLog.Error(err, "Failed to create webhook", "webhook", "Experiment")
+
+	if err := setupControllers(mgr, agentPort, secretToken, agentImage, injectionEnabled, webhookTimeout); err != nil {
+		setupLog.Error(err, "Failed to register controllers or webhooks")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
@@ -228,15 +171,157 @@ func main() {
 	}
 }
 
-// splitTrimmed splits a comma-separated string and trims whitespace from each element.
-// Empty elements (from leading/trailing commas) are discarded.
-func splitTrimmed(s string) []string {
-	parts := strings.Split(s, ",")
-	result := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			result = append(result, t)
+// buildWebhookServer constructs the webhook server, optionally configuring cert paths.
+func buildWebhookServer(certPath, certName, certKey string, tlsOpts []func(*tls.Config)) webhook.Server {
+	opts := webhook.Options{TLSOpts: tlsOpts}
+	if len(certPath) > 0 {
+		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
+			"webhook-cert-path", certPath, "webhook-cert-name", certName, "webhook-cert-key", certKey)
+		opts.CertDir = certPath
+		opts.CertName = certName
+		opts.KeyName = certKey
+	}
+	return webhook.NewServer(opts)
+}
+
+// buildMetricsOptions constructs the metrics server options, optionally configuring cert paths.
+// More info:
+// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/metrics/server
+// - https://book.kubebuilder.io/reference/metrics.html
+func buildMetricsOptions(
+	addr string, secure bool, certPath, certName, certKey string, tlsOpts []func(*tls.Config),
+) metricsserver.Options {
+	opts := metricsserver.Options{
+		BindAddress:   addr,
+		SecureServing: secure,
+		TLSOpts:       tlsOpts,
+	}
+	if secure {
+		// FilterProvider protects the metrics endpoint with authn/authz.
+		// The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
+		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/metrics/filters#WithAuthenticationAndAuthorization
+		opts.FilterProvider = filters.WithAuthenticationAndAuthorization
+	}
+	if len(certPath) > 0 {
+		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
+			"metrics-cert-path", certPath, "metrics-cert-name", certName, "metrics-cert-key", certKey)
+		opts.CertDir = certPath
+		opts.CertName = certName
+		opts.KeyName = certKey
+	}
+	return opts
+}
+
+// setupControllers registers all reconcilers and webhooks with the manager.
+func setupControllers(
+	mgr ctrl.Manager, agentPort int, secretToken, agentImage string, injectionEnabled bool, webhookTimeout time.Duration,
+) error {
+	if err := (&controller.ExperimentReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("experiment-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("experiment controller: %w", err)
+	}
+	if err := (&controller.ExperimentRunReconciler{
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		Recorder:       mgr.GetEventRecorder("experimentrun-controller"),
+		WebhookTimeout: webhookTimeout,
+		AgentPort:      agentPort,
+		SecretToken:    secretToken,
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("experimentrun controller: %w", err)
+	}
+	if err := omenwebhook.SetupExperimentWebhookWithManager(mgr); err != nil {
+		return fmt.Errorf("experiment webhook: %w", err)
+	}
+	omenwebhook.SetupPodWebhookWithManager(mgr, &omenwebhook.PodMutator{
+		Client:      mgr.GetClient(),
+		AgentImage:  agentImage,
+		AgentPort:   agentPort,
+		SecretToken: secretToken,
+		Enabled:     injectionEnabled,
+	})
+	return nil
+}
+
+// checkRegistryReachable does a best-effort TCP dial to the image registry host.
+// Returns false if the registry is unreachable, true otherwise.
+func checkRegistryReachable(image string) bool {
+	host := parseRegistryHost(image)
+	conn, err := net.DialTimeout("tcp", host, 5*time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// parseRegistryHost extracts the registry host:port from an image reference.
+// Falls back to Docker Hub if no explicit registry is present.
+func parseRegistryHost(image string) string {
+	// Strip tag/digest.
+	ref := image
+	for i, ch := range image {
+		if ch == ':' || ch == '@' {
+			firstSlash := -1
+			for j := range i {
+				if image[j] == '/' {
+					firstSlash = j
+					break
+				}
+			}
+			if firstSlash < 0 || firstSlash > i {
+				// no slash before the colon → e.g. "alpine:3.21" → Docker Hub
+				break
+			}
+			ref = image[:i]
+			break
 		}
 	}
-	return result
+
+	// If the first path component looks like a hostname, use it.
+	parts := splitRef(ref)
+	if len(parts) > 1 {
+		host := parts[0]
+		if containsDot(host) || containsColon(host) {
+			if !containsColon(host) {
+				host += ":443"
+			}
+			return host
+		}
+	}
+	return "registry-1.docker.io:443"
+}
+
+func splitRef(s string) []string {
+	var parts []string
+	start := 0
+	for i, ch := range s {
+		if ch == '/' {
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	parts = append(parts, s[start:])
+	return parts
+}
+
+func containsDot(s string) bool {
+	for _, ch := range s {
+		if ch == '.' {
+			return true
+		}
+	}
+	return false
+}
+
+func containsColon(s string) bool {
+	for _, ch := range s {
+		if ch == ':' {
+			return true
+		}
+	}
+	return false
 }

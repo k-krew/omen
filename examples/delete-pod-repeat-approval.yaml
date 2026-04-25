@@ -1,0 +1,27 @@
+apiVersion: chaos.kreicer.dev/v1alpha1
+kind: Experiment
+metadata:
+  name: weekly-chaos
+  namespace: default
+spec:
+  runPolicy:
+    type: Repeat
+    schedule: "0 10 * * 1"   # every Monday at 10:00
+    cooldown: 24h
+    concurrencyPolicy: Forbid
+  selector:
+    namespace: staging
+    labels:
+      app: api-server
+  mode:
+    type: random
+    count: 2
+  action:
+    type: delete_pod
+  approval:
+    required: true
+    ttl: 30m
+    webhook:
+      url: https://hooks.example.com/omen-approval
+  safety:
+    maxTargets: 2

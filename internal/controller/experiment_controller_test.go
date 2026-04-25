@@ -26,7 +26,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	chaosv1alpha1 "github.com/k-krew/omen/api/v1alpha1"
@@ -40,11 +39,24 @@ var _ = Describe("Experiment Controller", func() {
 
 	ctx := context.Background()
 
+	// The namespace must carry the chaos-enabled label for selectTargets to
+	// include pods in it. Patch it once before any spec in this suite runs.
+	BeforeEach(func() {
+		defaultNS := &corev1.Namespace{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ns}, defaultNS)).To(Succeed())
+		patch := defaultNS.DeepCopy()
+		if patch.Labels == nil {
+			patch.Labels = map[string]string{}
+		}
+		patch.Labels[chaosv1alpha1.EnabledLabel] = chaosv1alpha1.EnabledLabelValue
+		Expect(k8sClient.Update(ctx, patch)).To(Succeed())
+	})
+
 	newReconciler := func() *ExperimentReconciler {
 		return &ExperimentReconciler{
 			Client:   k8sClient,
 			Scheme:   k8sClient.Scheme(),
-			Recorder: record.NewFakeRecorder(10),
+			Recorder: &fakeEventRecorder{},
 		}
 	}
 

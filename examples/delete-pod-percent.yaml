@@ -1,0 +1,19 @@
+apiVersion: chaos.kreicer.dev/v1alpha1
+kind: Experiment
+metadata:
+  name: kill-third-of-fleet
+  namespace: default
+spec:
+  runPolicy:
+    type: Once
+  selector:
+    namespace: default
+    labels:
+      app: my-app
+  mode:
+    type: random
+    percent: 33   # ~33% of matching pods, minimum 1, capped by maxTargets
+  action:
+    type: delete_pod
+  safety:
+    maxTargets: 5
