@@ -267,7 +267,7 @@ func (r *ExperimentRunReconciler) handleApproved(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			result := r.executeDeletePod(ctx, run.Namespace, t, experiment.Spec.DryRun, experiment.Spec.Action.Force)
+			result := r.executeDeletePod(ctx, targetNamespace(experiment), t, experiment.Spec.DryRun, experiment.Spec.Action.Force)
 			results[idx] = result
 			log.Info("target action completed", "target", t, "status", result.Status, "reason", result.Reason)
 		}(i, target)
@@ -408,7 +408,7 @@ func (r *ExperimentRunReconciler) executeNetworkFault(
 		}
 
 		pod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: target}, pod); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: targetNamespace(experiment), Name: target}, pod); err != nil {
 			results[i] = chaosv1alpha1.TargetResult{
 				Target:            target,
 				Status:            chaosv1alpha1.TargetResultFailed,
@@ -511,7 +511,7 @@ func (r *ExperimentRunReconciler) handleNetworkFaultRollback(
 		}
 
 		pod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: res.Target}, pod); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: targetNamespace(experiment), Name: res.Target}, pod); err != nil {
 			// Pod is gone — network namespace is destroyed, fault is cleared.
 			results[i].NetworkFaultPhase = chaosv1alpha1.NetworkFaultCleanedUp
 			successCount++
@@ -576,12 +576,20 @@ func (r *ExperimentRunReconciler) handleRunDeletion(ctx context.Context, run *ch
 		return ctrl.Result{}, nil
 	}
 
+	// Fetch the parent Experiment to resolve the target namespace.
+	// If it's gone already, fall back to run.Namespace so we still attempt cleanup.
+	targetNS := run.Namespace
+	experiment := &chaosv1alpha1.Experiment{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.ExperimentName}, experiment); err == nil {
+		targetNS = targetNamespace(experiment)
+	}
+
 	for _, res := range run.Status.Results {
 		if res.NetworkFaultPhase != chaosv1alpha1.NetworkFaultInjected {
 			continue
 		}
 		pod := &corev1.Pod{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: res.Target}, pod); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: targetNS, Name: res.Target}, pod); err != nil {
 			continue
 		}
 		if err := r.sendRollbackRequest(ctx, pod); err != nil {

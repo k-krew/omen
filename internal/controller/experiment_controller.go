@@ -386,13 +386,23 @@ func (r *ExperimentReconciler) pruneHistory(ctx context.Context, experiment *cha
 	return deleteOldest(failed, failLimit)
 }
 
+// targetNamespace returns the namespace where target pods live.
+// Falls back to the Experiment's own namespace when spec.selector.namespace is unset,
+// preventing client-go from listing pods across all namespaces.
+func targetNamespace(experiment *chaosv1alpha1.Experiment) string {
+	if experiment.Spec.Selector.Namespace != "" {
+		return experiment.Spec.Selector.Namespace
+	}
+	return experiment.Namespace
+}
+
 // selectTargets fetches pods matching the selector and applies all safety filters.
 func (r *ExperimentReconciler) selectTargets(ctx context.Context, experiment *chaosv1alpha1.Experiment) ([]string, error) {
 	log := logf.FromContext(ctx)
 
 	sel := experiment.Spec.Selector
 	listOpts := []client.ListOption{
-		client.InNamespace(sel.Namespace),
+		client.InNamespace(targetNamespace(experiment)),
 		client.MatchingLabels(sel.Labels),
 	}
 
