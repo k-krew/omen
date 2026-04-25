@@ -242,15 +242,29 @@ func (r *ExperimentRunReconciler) handleApproved(
 		}
 	}
 
+	if experiment.Spec.Action.Type == chaosv1alpha1.ActionTypeNetworkFault {
+		// For network faults, set Phase=Running and StartedAt in a single atomic
+		// status patch so any concurrent reconcile that enters handleNetworkFaultRollback
+		// always sees StartedAt != nil and cannot prematurely transition to Failed.
+		patch := client.MergeFrom(run.DeepCopy())
+		now := metav1.Now()
+		run.Status.StartedAt = &now
+		run.Status.Phase = chaosv1alpha1.PhaseRunning
+		if err := r.Status().Patch(ctx, run, patch); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.Recorder.Eventf(run, nil, corev1.EventTypeNormal, "PhaseTransition", "PhaseTransition",
+			"phase changed to %s", chaosv1alpha1.PhaseRunning)
+		r.Recorder.Eventf(run, nil, corev1.EventTypeNormal, "ExecutionStarted", "ExecutionStarted",
+			"beginning chaos execution")
+		return r.executeNetworkFault(ctx, run, experiment)
+	}
+
 	if _, err := r.transitionPhase(ctx, run, chaosv1alpha1.PhaseRunning); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	r.Recorder.Eventf(run, nil, corev1.EventTypeNormal, "ExecutionStarted", "ExecutionStarted", "beginning chaos execution")
-
-	if experiment.Spec.Action.Type == chaosv1alpha1.ActionTypeNetworkFault {
-		return r.executeNetworkFault(ctx, run, experiment)
-	}
 
 	now := metav1.Now()
 	run.Status.StartedAt = &now
