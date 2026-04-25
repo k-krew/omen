@@ -57,6 +57,7 @@ type PodMutator struct {
 
 // SetupPodWebhookWithManager registers the mutating webhook handler.
 func SetupPodWebhookWithManager(mgr ctrl.Manager, m *PodMutator) {
+	m.decoder = admission.NewDecoder(mgr.GetScheme())
 	mgr.GetWebhookServer().Register("/mutate-v1-pod", &admission.Webhook{Handler: m})
 }
 
