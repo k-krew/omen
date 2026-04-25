@@ -389,6 +389,17 @@ func (r *ExperimentRunReconciler) executeNetworkFault(
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Add the finalizer FIRST, before touching any status fields.
+	// r.Patch replaces the local run object with the server response (which has
+	// no status fields), so any status written before the patch would be wiped.
+	if !controllerutil.ContainsFinalizer(run, networkFaultFinalizer) {
+		patch := client.MergeFrom(run.DeepCopy())
+		controllerutil.AddFinalizer(run, networkFaultFinalizer)
+		if err := r.Patch(ctx, run, patch); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	now := metav1.Now()
 	run.Status.StartedAt = &now
 
@@ -439,15 +450,6 @@ func (r *ExperimentRunReconciler) executeNetworkFault(
 
 	run.Status.Results = results
 	run.Status.Summary = &chaosv1alpha1.RunSummary{Total: len(results)}
-
-	// Add the finalizer so we can roll back when the run is deleted.
-	if !controllerutil.ContainsFinalizer(run, networkFaultFinalizer) {
-		patch := client.MergeFrom(run.DeepCopy())
-		controllerutil.AddFinalizer(run, networkFaultFinalizer)
-		if err := r.Patch(ctx, run, patch); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
 
 	if err := r.Status().Update(ctx, run); err != nil {
 		return ctrl.Result{}, err
