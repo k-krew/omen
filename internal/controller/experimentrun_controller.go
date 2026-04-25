@@ -549,13 +549,16 @@ func (r *ExperimentRunReconciler) handleNetworkFaultRollback(
 	}
 	run.Status.Phase = finalPhase
 
-	patch := client.MergeFrom(run.DeepCopy())
-	controllerutil.RemoveFinalizer(run, networkFaultFinalizer)
-	if err := r.Patch(ctx, run, patch); err != nil {
+	// Persist the final status BEFORE removing the finalizer.
+	// r.Patch replaces the local run object with the server response (no status
+	// fields), so calling it first would wipe Results, Summary, CompletedAt and Phase.
+	if err := r.Status().Update(ctx, run); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.Status().Update(ctx, run); err != nil {
+	patch := client.MergeFrom(run.DeepCopy())
+	controllerutil.RemoveFinalizer(run, networkFaultFinalizer)
+	if err := r.Patch(ctx, run, patch); err != nil {
 		return ctrl.Result{}, err
 	}
 
