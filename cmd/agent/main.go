@@ -182,6 +182,16 @@ func main() {
 
 	a := &agent{port: port, secretToken: secretToken, log: log}
 
+	// Best-effort clean slate: if the container restarts while a tc rule is
+	// active, the old qdisc stays on the interface and causes "Exclusivity flag
+	// on" errors for new fault injections. Ignore the error — it just means
+	// there was nothing to clean up.
+	if out, err := exec.Command("tc", "qdisc", "del", "dev", defaultInterface, "root").CombinedOutput(); err != nil {
+		log.Info("No existing tc qdisc to clean up (this is normal on first start)", "output", string(out))
+	} else {
+		log.Info("Cleared stale tc qdisc on startup", "interface", defaultInterface)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", a.handleHealthz)
 	mux.HandleFunc("POST /network-fault", a.authenticate(a.handleFaultApply))
