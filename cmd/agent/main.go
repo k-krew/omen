@@ -53,6 +53,27 @@ type agent struct {
 	log         *slog.Logger
 }
 
+// responseWriter wraps http.ResponseWriter to capture the status code for logging.
+type responseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+// logRequest is a middleware that logs every HTTP request with method, path,
+// remote address, and response status code.
+func (a *agent) logRequest(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+		next(rw, r)
+		a.log.Info("HTTP request", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "status", rw.status)
+	}
+}
+
 // authenticate wraps a handler with token validation.
 func (a *agent) authenticate(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -193,9 +214,9 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", a.handleHealthz)
-	mux.HandleFunc("POST /network-fault", a.authenticate(a.handleFaultApply))
-	mux.HandleFunc("DELETE /network-fault", a.authenticate(a.handleFaultRemove))
+	mux.HandleFunc("GET /healthz", a.logRequest(a.handleHealthz))
+	mux.HandleFunc("POST /network-fault", a.logRequest(a.authenticate(a.handleFaultApply)))
+	mux.HandleFunc("DELETE /network-fault", a.logRequest(a.authenticate(a.handleFaultRemove)))
 
 	srv := &http.Server{
 		Addr:              net.JoinHostPort("0.0.0.0", port),
