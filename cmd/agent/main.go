@@ -70,6 +70,8 @@ func (a *agent) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleFaultApply applies a tc-netem qdisc to the pod's network interface.
+// Traffic originating from the agent's own port is routed to a bypass band via
+// a u32 filter so that Kubelet health probes are never dropped by the netem rules.
 func (a *agent) handleFaultApply(w http.ResponseWriter, r *http.Request) {
 	var req faultRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -84,11 +86,14 @@ func (a *agent) handleFaultApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	args := buildTCArgs(req)
-	if out, err := exec.CommandContext(r.Context(), "tc", args...).CombinedOutput(); err != nil {
-		a.log.Error("Failed to apply network fault", "error", err, "output", string(out))
-		http.Error(w, fmt.Sprintf("tc failed: %v: %s", err, out), http.StatusInternalServerError)
-		return
+	for _, args := range buildTCCommands(req, a.port) {
+		if out, err := exec.CommandContext(r.Context(), "tc", args...).CombinedOutput(); err != nil {
+			a.log.Error("Failed to apply network fault", "error", err, "output", string(out), "args", args)
+			// Best-effort rollback: remove the root qdisc to clean up any partial state.
+			_ = exec.CommandContext(r.Context(), "tc", "qdisc", "del", "dev", req.Interface, "root").Run()
+			http.Error(w, fmt.Sprintf("tc failed: %v: %s", err, out), http.StatusInternalServerError)
+			return
+		}
 	}
 	a.log.Info("Network fault applied", "interface", req.Interface)
 	w.WriteHeader(http.StatusOK)
@@ -111,19 +116,59 @@ func (a *agent) handleFaultRemove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// buildTCArgs translates a faultRequest into tc-qdisc-add arguments (without "tc").
-func buildTCArgs(req faultRequest) []string {
-	args := []string{"qdisc", "add", "dev", req.Interface, "root", "netem"}
+// buildTCCommands returns the ordered sequence of tc argument slices needed to
+// apply the fault while protecting agentPort traffic from the netem rules.
+//
+// The resulting setup:
+//
+//	root → prio (3 bands)
+//	         └─ band 1: no qdisc (bypass — used for agent port traffic)
+//	         └─ band 3: netem (latency / loss applied here)
+//	filter prio 1: src port agentPort → band 1
+//	filter prio 2: everything else    → band 3
+func buildTCCommands(req faultRequest, agentPort string) [][]string {
+	// 1. Root prio qdisc — priomap sends all traffic to band 1 by default;
+	//    the filters below override that for targeted traffic.
+	cmds := [][]string{
+		{
+			"qdisc", "add", "dev", req.Interface, "root", "handle", "1:", "prio",
+			"bands", "3", "priomap",
+			"0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0",
+		},
+	}
+
+	// 2. Netem qdisc on band 3 (parent 1:3).
+	netem := []string{"qdisc", "add", "dev", req.Interface, "parent", "1:3", "handle", "30:", "netem"}
 	if req.LatencyMs > 0 {
-		args = append(args, "delay", fmt.Sprintf("%dms", req.LatencyMs))
+		netem = append(netem, "delay", fmt.Sprintf("%dms", req.LatencyMs))
 		if req.JitterMs > 0 {
-			args = append(args, fmt.Sprintf("%dms", req.JitterMs))
+			netem = append(netem, fmt.Sprintf("%dms", req.JitterMs))
 		}
 	}
 	if req.PacketLoss > 0 {
-		args = append(args, "loss", fmt.Sprintf("%d%%", req.PacketLoss))
+		netem = append(netem, "loss", fmt.Sprintf("%d%%", req.PacketLoss))
 	}
-	return args
+	cmds = append(cmds, netem)
+
+	// 3. Filter: responses from the agent port bypass netem (→ band 1).
+	if agentPort != "" {
+		cmds = append(cmds, []string{
+			"filter", "add", "dev", req.Interface,
+			"protocol", "ip", "parent", "1:0", "prio", "1",
+			"u32", "match", "ip", "sport", agentPort, "0xffff",
+			"flowid", "1:1",
+		})
+	}
+
+	// 4. Filter: all other traffic → band 3 (netem).
+	cmds = append(cmds, []string{
+		"filter", "add", "dev", req.Interface,
+		"protocol", "ip", "parent", "1:0", "prio", "2",
+		"u32", "match", "ip", "dst", "0.0.0.0/0",
+		"flowid", "1:3",
+	})
+
+	return cmds
 }
 
 func main() {
