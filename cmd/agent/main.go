@@ -30,8 +30,12 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const (
@@ -50,9 +54,11 @@ type faultRequest struct {
 }
 
 type agent struct {
-	port        string
-	secretToken string
-	log         *slog.Logger
+	port          string
+	secretToken   string
+	log           *slog.Logger
+	faultActive   prometheus.Gauge
+	requestsTotal *prometheus.CounterVec
 }
 
 // responseWriter wraps http.ResponseWriter to capture the status code for logging.
@@ -68,12 +74,16 @@ func (rw *responseWriter) WriteHeader(code int) {
 
 // logRequest is a middleware that logs every HTTP request with method, path,
 // remote address, and response status code at DEBUG level so that frequent
-// Kubelet health probes do not pollute the default INFO log stream.
+// Kubelet health probes do not pollute the default INFO log stream. It also
+// increments the omen_agent_requests_total counter.
 func (a *agent) logRequest(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		next(rw, r)
 		a.log.Debug("HTTP request", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "status", rw.status)
+		if a.requestsTotal != nil {
+			a.requestsTotal.WithLabelValues(r.Method, r.URL.Path, strconv.Itoa(rw.status)).Inc()
+		}
 	}
 }
 
@@ -120,6 +130,9 @@ func (a *agent) handleFaultApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.log.Info("Network fault applied", "interface", req.Interface)
+	if a.faultActive != nil {
+		a.faultActive.Set(1)
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -136,6 +149,9 @@ func (a *agent) handleFaultRemove(w http.ResponseWriter, r *http.Request) {
 		a.log.Warn("tc qdisc del returned error (may already be clean)", "error", err, "output", string(out))
 	} else {
 		a.log.Info("Network fault removed", "interface", iface)
+	}
+	if a.faultActive != nil {
+		a.faultActive.Set(0)
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -214,7 +230,24 @@ func main() {
 	}
 	secretToken := os.Getenv("OMEN_SECRET_TOKEN")
 
-	a := &agent{port: port, secretToken: secretToken, log: log}
+	registry := prometheus.NewRegistry()
+	faultActive := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "omen_agent_fault_active",
+		Help: "1 if a network fault is currently active on this pod, 0 otherwise.",
+	})
+	requestsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "omen_agent_requests_total",
+		Help: "Total number of HTTP requests received by the omen-agent.",
+	}, []string{"method", "path", "status"})
+	registry.MustRegister(faultActive, requestsTotal)
+
+	a := &agent{
+		port:          port,
+		secretToken:   secretToken,
+		log:           log,
+		faultActive:   faultActive,
+		requestsTotal: requestsTotal,
+	}
 
 	// Best-effort clean slate: if the container restarts while a tc rule is
 	// active, the old qdisc stays on the interface and causes "Exclusivity flag
@@ -230,11 +263,14 @@ func main() {
 	mux.HandleFunc("GET /healthz", a.logRequest(a.handleHealthz))
 	mux.HandleFunc("POST /network-fault", a.logRequest(a.authenticate(a.handleFaultApply)))
 	mux.HandleFunc("DELETE /network-fault", a.logRequest(a.authenticate(a.handleFaultRemove)))
+	mux.Handle("GET /metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 
 	srv := &http.Server{
 		Addr:              net.JoinHostPort("0.0.0.0", port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
 	}
 
 	log.Info("Starting omen-agent", "port", port)
