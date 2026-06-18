@@ -48,6 +48,9 @@ type PodMutator struct {
 	AgentImage  string
 	AgentPort   int
 	SecretToken string
+	// AgentDebug enables verbose DEBUG-level logging inside the injected agent
+	// sidecar by setting OMEN_AGENT_DEBUG=true in the container env.
+	AgentDebug bool
 	// Enabled is false when the pre-flight registry check fails; in that case
 	// all admission requests are allowed without modification so user pods are
 	// never bricked by an ImagePullBackOff.
@@ -110,6 +113,18 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 	return admission.PatchResponseFromRaw(req.Object.Raw, marshaled)
 }
 
+// buildAgentEnv constructs the env vars for the agent sidecar container.
+func (m *PodMutator) buildAgentEnv(port int) []corev1.EnvVar {
+	env := []corev1.EnvVar{
+		{Name: "OMEN_AGENT_PORT", Value: fmt.Sprintf("%d", port)},
+		{Name: "OMEN_SECRET_TOKEN", Value: m.SecretToken},
+	}
+	if m.AgentDebug {
+		env = append(env, corev1.EnvVar{Name: "OMEN_AGENT_DEBUG", Value: "true"})
+	}
+	return env
+}
+
 func (m *PodMutator) buildAgentContainer() corev1.Container {
 	port := m.AgentPort
 	if port == 0 {
@@ -124,10 +139,7 @@ func (m *PodMutator) buildAgentContainer() corev1.Container {
 		Ports: []corev1.ContainerPort{
 			{Name: "agent", ContainerPort: int32(port), Protocol: corev1.ProtocolTCP},
 		},
-		Env: []corev1.EnvVar{
-			{Name: "OMEN_AGENT_PORT", Value: fmt.Sprintf("%d", port)},
-			{Name: "OMEN_SECRET_TOKEN", Value: m.SecretToken},
-		},
+		Env: m.buildAgentEnv(port),
 		SecurityContext: &corev1.SecurityContext{
 			Privileged:               &privileged,
 			AllowPrivilegeEscalation: &allowEscalation,

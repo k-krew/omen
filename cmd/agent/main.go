@@ -65,12 +65,13 @@ func (rw *responseWriter) WriteHeader(code int) {
 }
 
 // logRequest is a middleware that logs every HTTP request with method, path,
-// remote address, and response status code.
+// remote address, and response status code at DEBUG level so that frequent
+// Kubelet health probes do not pollute the default INFO log stream.
 func (a *agent) logRequest(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		next(rw, r)
-		a.log.Info("HTTP request", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "status", rw.status)
+		a.log.Debug("HTTP request", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "status", rw.status)
 	}
 }
 
@@ -193,7 +194,11 @@ func buildTCCommands(req faultRequest, agentPort string) [][]string {
 }
 
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logLevel := slog.LevelInfo
+	if os.Getenv("OMEN_AGENT_DEBUG") == "true" {
+		logLevel = slog.LevelDebug
+	}
+	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 
 	port := os.Getenv("OMEN_AGENT_PORT")
 	if port == "" {

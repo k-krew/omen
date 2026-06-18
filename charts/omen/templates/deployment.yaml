@@ -46,6 +46,9 @@ spec:
             {{- if .Values.manager.agentPort }}
             - --agent-port={{ .Values.manager.agentPort }}
             {{- end }}
+            {{- if .Values.manager.agentDebug }}
+            - --agent-debug=true
+            {{- end }}
           ports:
             - name: webhook-server
               containerPort: {{ .Values.webhook.port }}

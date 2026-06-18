@@ -67,6 +67,7 @@ func main() {
 	var webhookTimeout time.Duration
 	var agentImage string
 	var agentPort int
+	var agentDebug bool
 	var tlsOpts []func(*tls.Config)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -93,6 +94,8 @@ func main() {
 		"Container image for the omen-agent sidecar injected into target pods.")
 	flag.IntVar(&agentPort, "agent-port", 9999,
 		"Port the omen-agent sidecar listens on. Must not conflict with user application ports.")
+	flag.BoolVar(&agentDebug, "agent-debug", false,
+		"Enable DEBUG-level logging in injected omen-agent sidecars (sets OMEN_AGENT_DEBUG=true).")
 
 	opts := zap.Options{
 		Development: true,
@@ -149,7 +152,7 @@ func main() {
 			"image", agentImage)
 	}
 
-	if err := setupControllers(mgr, agentPort, secretToken, agentImage, injectionEnabled, webhookTimeout); err != nil {
+	if err := setupControllers(mgr, agentPort, secretToken, agentImage, injectionEnabled, agentDebug, webhookTimeout); err != nil {
 		setupLog.Error(err, "Failed to register controllers or webhooks")
 		os.Exit(1)
 	}
@@ -214,7 +217,7 @@ func buildMetricsOptions(
 
 // setupControllers registers all reconcilers and webhooks with the manager.
 func setupControllers(
-	mgr ctrl.Manager, agentPort int, secretToken, agentImage string, injectionEnabled bool, webhookTimeout time.Duration,
+	mgr ctrl.Manager, agentPort int, secretToken, agentImage string, injectionEnabled, agentDebug bool, webhookTimeout time.Duration,
 ) error {
 	if err := (&controller.ExperimentReconciler{
 		Client:   mgr.GetClient(),
@@ -241,6 +244,7 @@ func setupControllers(
 		AgentImage:  agentImage,
 		AgentPort:   agentPort,
 		SecretToken: secretToken,
+		AgentDebug:  agentDebug,
 		Enabled:     injectionEnabled,
 	})
 	return nil
