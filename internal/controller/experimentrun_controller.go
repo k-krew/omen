@@ -643,6 +643,12 @@ func (r *ExperimentRunReconciler) sendFaultRequest(ctx context.Context, pod *cor
 		if nf.PacketLoss != nil {
 			body["packetLoss"] = *nf.PacketLoss
 		}
+		if nf.PacketCorruption != nil {
+			body["packetCorruption"] = *nf.PacketCorruption
+		}
+		if nf.PacketDuplication != nil {
+			body["packetDuplication"] = *nf.PacketDuplication
+		}
 	}
 	return r.agentRequest(ctx, http.MethodPost, r.agentURL(pod)+"/network-fault", body)
 }

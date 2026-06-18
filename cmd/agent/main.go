@@ -41,10 +41,12 @@ const (
 
 // faultRequest is the JSON body for POST /network-fault.
 type faultRequest struct {
-	LatencyMs  int64  `json:"latencyMs"`
-	JitterMs   int64  `json:"jitterMs"`
-	PacketLoss int    `json:"packetLoss"`
-	Interface  string `json:"interface"`
+	LatencyMs         int64  `json:"latencyMs"`
+	JitterMs          int64  `json:"jitterMs"`
+	PacketLoss        int    `json:"packetLoss"`
+	PacketCorruption  int    `json:"packetCorruption"`
+	PacketDuplication int    `json:"packetDuplication"`
+	Interface         string `json:"interface"`
 }
 
 type agent struct {
@@ -103,8 +105,8 @@ func (a *agent) handleFaultApply(w http.ResponseWriter, r *http.Request) {
 	if req.Interface == "" {
 		req.Interface = defaultInterface
 	}
-	if req.LatencyMs == 0 && req.PacketLoss == 0 {
-		http.Error(w, "at least one of latencyMs or packetLoss must be non-zero", http.StatusBadRequest)
+	if req.LatencyMs == 0 && req.PacketLoss == 0 && req.PacketCorruption == 0 && req.PacketDuplication == 0 {
+		http.Error(w, "at least one of latencyMs, packetLoss, packetCorruption, or packetDuplication must be non-zero", http.StatusBadRequest)
 		return
 	}
 
@@ -169,6 +171,12 @@ func buildTCCommands(req faultRequest, agentPort string) [][]string {
 	}
 	if req.PacketLoss > 0 {
 		netem = append(netem, "loss", fmt.Sprintf("%d%%", req.PacketLoss))
+	}
+	if req.PacketCorruption > 0 {
+		netem = append(netem, "corrupt", fmt.Sprintf("%d%%", req.PacketCorruption))
+	}
+	if req.PacketDuplication > 0 {
+		netem = append(netem, "duplicate", fmt.Sprintf("%d%%", req.PacketDuplication))
 	}
 	cmds = append(cmds, netem)
 

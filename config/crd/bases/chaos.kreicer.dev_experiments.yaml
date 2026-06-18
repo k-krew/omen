@@ -87,6 +87,18 @@ spec:
                         description: latency is the fixed delay added to outgoing
                           packets (e.g., "100ms").
                         type: string
+                      packetCorruption:
+                        description: packetCorruption is the percentage of packets
+                          to corrupt with random noise (1-100).
+                        maximum: 100
+                        minimum: 1
+                        type: integer
+                      packetDuplication:
+                        description: packetDuplication is the percentage of packets
+                          to duplicate (1-100).
+                        maximum: 100
+                        minimum: 1
+                        type: integer
                       packetLoss:
                         description: |-
                           packetLoss is the percentage of packets to drop (1-100).

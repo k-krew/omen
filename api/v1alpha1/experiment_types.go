@@ -67,7 +67,7 @@ const (
 )
 
 // NetworkFaultSpec defines the parameters for a network chaos action.
-// At least one of Latency or PacketLoss must be set.
+// At least one of Latency, PacketLoss, PacketCorruption, or PacketDuplication must be set.
 type NetworkFaultSpec struct {
 	// latency is the fixed delay added to outgoing packets (e.g., "100ms").
 	// +optional
@@ -84,6 +84,18 @@ type NetworkFaultSpec struct {
 	// +kubebuilder:validation:Maximum=100
 	// +optional
 	PacketLoss *int `json:"packetLoss,omitempty"`
+
+	// packetCorruption is the percentage of packets to corrupt with random noise (1-100).
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	PacketCorruption *int `json:"packetCorruption,omitempty"`
+
+	// packetDuplication is the percentage of packets to duplicate (1-100).
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	PacketDuplication *int `json:"packetDuplication,omitempty"`
 
 	// duration is how long the fault is held before the controller
 	// automatically rolls it back.
