@@ -6,55 +6,47 @@ Omen is built so that adopting Chaos Engineering doesn't require learning monstr
 
 ---
 
-## Current State (v0.1.x)
-*The foundation for controlled chaos.*
+## Completed (v0.1.x - v0.3.x)
+*The foundation for controlled chaos and network faults.*
 
 - [x] **Pod Deletion** — Basic action to test application resilience.
+- [x] **Network Chaos** — Inject latency, packet loss, corruption, and duplication via an opt-in sidecar architecture (`omen-agent`).
+- [x] **Advanced Target Filtering** — Select exact target counts or percentage of total replicas. Skip terminating pods and pods with opt-out annotations.
 - [x] **Transparent Target Selection (Preview)** — Locking in the exact list of targets before the experiment starts.
 - [x] **Manual Control (Approval)** — Ability to confirm attacks via Webhook or `kubectl patch`.
 - [x] **Schedules (Cron)** — Regular chaos tests with Concurrency Policies to prevent overlaps.
+- [x] **Safety by Default** — Opt-in namespace architecture (`chaos.kreicer.dev/enabled=true`) ensures critical workloads are never accidentally targeted.
+- [x] **Observability** — Emits standard Kubernetes Events on state changes and provides Prometheus metrics for both controller and agent.
 - [x] **Dry Run** — Safe simulation to verify selectors and limits without causing actual harm.
 
 ---
 
-## Near-term Plans (v0.2.x - v0.3.x)
-*Expanding the attack arsenal without complicating the architecture.*
+## Near-term Plans (v0.4.x)
+*Expanding the attack arsenal and integrations.*
 
-- [ ] **Default Namespace Protection**
-  - Automatically protect `kube-system`, `omen-system`, and other critical namespaces from being targeted by default, requiring explicit overrides if users really want to target them.
-- [ ] **Network Chaos**
-  - **Network Latency** to simulate slow connections.
-  - **Packet Drop** to test microservice timeouts.
-  - *Focus: Implementation via lightweight sidecars or eBPF, strictly avoiding heavy node-level dependencies.*
 - [ ] **Resource Stress**
-  - Artificial CPU/Memory consumption inside targeted pods.
-- [ ] **Advanced Target Filtering**
-  - Target selection by percentage of total replicas (e.g., "kill 10% of pods, but at least 1").
-  - Exclude recently created pods (protection against killing recovering replicas).
-
----
-
-## Mid-term Goals (v0.4.x - v0.5.x)
-*Integrations, observability, and ChatOps for teams.*
-
+  - Artificial CPU/Memory consumption inside targeted pods using the `omen-agent` sidecar.
 - [ ] **Messenger Integration (ChatOps)**
   - Send Approval requests directly to Slack / Telegram / Discord.
   - Interactive "Approve" / "Deny" buttons right in the chat.
-- [ ] **Out-of-the-box Observability**
-  - Export metrics to Prometheus (successful/failed experiments, recovery time).
-  - Ready-to-use Grafana dashboards.
-- [ ] **Experiment Notifications**
-  - Alerts on chaos test start and completion (Kubernetes Events, Webhooks).
+- [ ] **Grafana Dashboards**
+  - Ready-to-use Grafana dashboards for controller and agent metrics.
+
+---
+
+## Mid-term Goals (v0.5.x)
+*Smart chaos.*
+
+- [ ] **Automatic Halt & Rollback**
+  - Prometheus integration: if service metrics (e.g., 5xx error rate) exceed a threshold during an experiment, immediately abort the experiment and roll back faults.
+- [ ] **Chaos Templates**
+  - Pre-defined experiment templates (`ExperimentTemplate` CRD) so beginners don't have to write YAML from scratch.
 
 ---
 
 ## Long-term Goals (v1.0.x)
-*Smart chaos and absolute safety.*
+*The ultimate user experience.*
 
-- [ ] **Automatic Halt & Rollback**
-  - Prometheus integration: if service metrics (e.g., 5xx error rate) exceed a threshold during an experiment, immediately abort the experiment.
-- [ ] **Chaos Templates**
-  - Pre-defined experiment templates (`ExperimentTemplate` CRD) so beginners don't have to write YAML from scratch.
 - [ ] **Lightweight Web UI (Optional)**
   - Minimalist interface just to view active experiments, run history (`ExperimentRuns`), and click "Approve".
 

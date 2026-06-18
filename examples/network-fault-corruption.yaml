@@ -1,0 +1,16 @@
+apiVersion: chaos.kreicer.dev/v1alpha1
+kind: Experiment
+metadata:
+  name: network-corruption-example
+  namespace: default
+spec:
+  schedule: "@every 15m"
+  selector:
+    matchLabels:
+      app: my-app
+  action:
+    networkFault:
+      latency: 20ms
+      packetCorruption: 15
+      packetDuplication: 10
+      duration: 3m

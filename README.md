@@ -23,14 +23,6 @@ Two CRDs are provided:
 
 Curious about what's coming next? Check out our [Roadmap](ROADMAP.md) to see our plans for advanced target filtering, ChatOps integrations, and more!
 
-## Breaking Changes in v0.3.0
-
-Version 0.3.0 introduces a major architectural shift to an **opt-in sidecar model** for network chaos, replacing the old ephemeral containers approach.
-
-- **Namespace Opt-in Required:** You must explicitly label target namespaces with `chaos.kreicer.dev/enabled=true`.
-- **Sidecar Injection:** A mutating webhook now automatically injects the `omen-agent` sidecar into pods in enabled namespaces.
-- **Removed Flags:** The `ProtectedNamespaces` CLI flag and Helm value have been completely removed in favor of the new opt-in label system.
-
 ## Install via Helm
 
 ```bash
@@ -50,7 +42,8 @@ helm install omen oci://ghcr.io/k-krew/charts/omen \
   --set manager.leaderElect=true \
   --set resources.limits.memory=256Mi \
   --set manager.agentImage="ghcr.io/k-krew/omen-agent:<version>" \
-  --set manager.agentPort=9999
+  --set manager.agentPort=9999 \
+  --set manager.agentDebug=true
 ```
 
 ### Controller flags
@@ -61,8 +54,9 @@ helm install omen oci://ghcr.io/k-krew/charts/omen \
 | `--leader-elect` | `false` | Enable leader election for HA deployments. |
 | `--metrics-bind-address` | `0` | Address for the metrics endpoint (`0` disables it). |
 | `--health-probe-bind-address` | `:8081` | Address for liveness/readiness probes. |
-| `--agent-image` | `ghcr.io/k-krew/omen-agent:v0.3.1` | Container image injected as the `omen-agent` sidecar into target pods. |
+| `--agent-image` | `ghcr.io/k-krew/omen-agent:<VERSION>` | Container image injected as the `omen-agent` sidecar into target pods. |
 | `--agent-port` | `9999` | Port the agent sidecar listens on. Change if it conflicts with application ports. |
+| `--agent-debug` | `false` | Enable DEBUG-level logging in injected omen-agent sidecars to mute health probe spam. |
 
 ## Examples
 
@@ -75,6 +69,7 @@ Ready-to-apply YAML manifests live in the [`examples/`](examples/) directory:
 | [`delete-pod-repeat-approval.yaml`](examples/delete-pod-repeat-approval.yaml) | Recurring deletion with manual approval and webhook notification |
 | [`network-fault-latency.yaml`](examples/network-fault-latency.yaml) | Inject 100ms latency + 10ms jitter for 5 minutes |
 | [`network-fault-packet-loss.yaml`](examples/network-fault-packet-loss.yaml) | Drop 30% of packets for 3 minutes |
+| [`network-fault-corruption.yaml`](examples/network-fault-corruption.yaml) | Corrupt 15% and duplicate 10% of packets with 20ms latency |
 | [`network-fault-blackhole.yaml`](examples/network-fault-blackhole.yaml) | Complete network blackhole (100% packet loss) with approval gate |
 
 To approve a pending run:
@@ -104,9 +99,11 @@ Injects network chaos into target pods using Linux Traffic Control (`tc netem`).
 | `latency` | duration | Fixed delay added to outgoing packets (e.g., `100ms`). |
 | `jitter` | duration | Random variation on top of latency (e.g., `10ms`). Requires `latency`. |
 | `packetLoss` | integer (1-100) | Percentage of packets to drop. Set to `100` for a full blackhole. |
+| `packetCorruption` | integer (1-100) | Percentage of packets to corrupt with random noise. |
+| `packetDuplication`| integer (1-100) | Percentage of packets to duplicate. |
 | `duration` | duration | How long to hold the fault before automatic rollback. Defaults to `5m`. |
 
-At least one of `latency` or `packetLoss` must be set.
+At least one of `latency`, `packetLoss`, `packetCorruption`, or `packetDuplication` must be set.
 
 ## Architecture
 
@@ -169,6 +166,10 @@ spec:
 
 ## Observability
 
+**Agent Metrics:**
+The injected `omen-agent` sidecar exposes a `/metrics` endpoint on its configured port (default `9999`). It provides Prometheus metrics such as the `omen_agent_fault_active` gauge (1 if a fault is currently applied, 0 otherwise) and the `omen_agent_requests_total` counter for HTTP traffic.
+
+**Kubernetes Events:**
 Every phase transition of an `ExperimentRun` emits a standard Kubernetes Event on the object:
 
 ```bash
