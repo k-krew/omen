@@ -248,4 +248,10 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error("Graceful shutdown failed", "error", err)
 	}
+
+	if out, err := exec.Command("tc", "qdisc", "del", "dev", defaultInterface, "root").CombinedOutput(); err != nil {
+		log.Debug("No active tc qdisc to clean up on shutdown", "output", string(out))
+	} else {
+		log.Info("Cleared tc qdisc on shutdown", "interface", defaultInterface)
+	}
 }
