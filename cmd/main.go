@@ -152,7 +152,9 @@ func main() {
 			"image", agentImage)
 	}
 
-	if err := setupControllers(mgr, agentPort, secretToken, agentImage, injectionEnabled, agentDebug, webhookTimeout); err != nil {
+	if err := setupControllers(
+		mgr, agentPort, secretToken, agentImage, injectionEnabled, agentDebug, webhookTimeout,
+	); err != nil {
 		setupLog.Error(err, "Failed to register controllers or webhooks")
 		os.Exit(1)
 	}
@@ -217,7 +219,8 @@ func buildMetricsOptions(
 
 // setupControllers registers all reconcilers and webhooks with the manager.
 func setupControllers(
-	mgr ctrl.Manager, agentPort int, secretToken, agentImage string, injectionEnabled, agentDebug bool, webhookTimeout time.Duration,
+	mgr ctrl.Manager, agentPort int, secretToken, agentImage string,
+	injectionEnabled, agentDebug bool, webhookTimeout time.Duration,
 ) error {
 	if err := (&controller.ExperimentReconciler{
 		Client:   mgr.GetClient(),

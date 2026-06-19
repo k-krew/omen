@@ -116,7 +116,9 @@ func (a *agent) handleFaultApply(w http.ResponseWriter, r *http.Request) {
 		req.Interface = defaultInterface
 	}
 	if req.LatencyMs == 0 && req.PacketLoss == 0 && req.PacketCorruption == 0 && req.PacketDuplication == 0 {
-		http.Error(w, "at least one of latencyMs, packetLoss, packetCorruption, or packetDuplication must be non-zero", http.StatusBadRequest)
+		http.Error(w,
+			"at least one of latencyMs, packetLoss, packetCorruption, or packetDuplication must be non-zero",
+			http.StatusBadRequest)
 		return
 	}
 
